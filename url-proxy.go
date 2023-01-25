@@ -1,10 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
 )
 
 var (
@@ -50,6 +55,10 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("req - %s", uri)
 
+	//判断是否存在缓存文件
+	name := strings.Replace(uri, "://", "/", 1)
+	stat, _ := os.Stat(name)
+
 	//请求远端文件
 	resp, err := http.Get(uri)
 	defer func(Body io.ReadCloser) {
@@ -61,10 +70,54 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	//响应文件
+	//响应头
 	copyHeader(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
+
+	//响应内容
+	length, _ := strconv.ParseInt(
+		resp.Header.Get("Content-Length"), 10, 64,
+	)
+	if stat == nil || stat.Size() != length {
+		_, _ = io.Copy(w, resp.Body)
+	} else {
+		file, _ := os.Open(name)
+		_, _ = io.Copy(w, file)
+	}
+
+	//缓存文件
+	// TODO:: 逻辑错误，需要实现边下载边保存
+	go func() {
+		if length < 102400 {
+			return
+		}
+
+		//创建文件
+		nano := strconv.FormatInt(time.Now().UnixNano(), 10)
+		file, err := os.Create(name + "." + nano)
+		if err == nil {
+			log.Printf("file create err - %s", err)
+			return
+		}
+		defer func(file *os.File) {
+			_ = file.Close()
+		}(file)
+
+		//写入文件
+		writer := bufio.NewWriter(file)
+		_, err = io.Copy(writer, resp.Body)
+		if err != nil {
+			log.Printf("file copy err - %s", err)
+			return
+		}
+		_ = writer.Flush()
+
+		//重命名文件
+		err = os.Rename(name+"."+nano, name)
+		if err != nil {
+			_ = os.Remove(name + "." + nano)
+		}
+	}()
 }
 
 //main 程序入口
