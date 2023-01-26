@@ -52,14 +52,14 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 	//请求远端文件
 	resp, err := http.Get(uri)
-	defer func(Body io.ReadCloser) {
-		_ = Body.Close()
-	}(resp.Body)
 	if err != nil {
 		log.Printf("get err - %s", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
+	defer func(Body io.ReadCloser) {
+		_ = Body.Close()
+	}(resp.Body)
 
 	//响应文件
 	copyHeader(w.Header(), resp.Header)
