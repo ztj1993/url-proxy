@@ -1,13 +1,5 @@
 #!/bin/bash
 
-if [ $# -ne 1 ]; then
-    echo "./build.sh version"
-    exit
-fi
-
-rm -rf _
-mkdir _
-
 CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build                    -ldflags="-w -s" -o _/uproxy_darwin_amd64 .
 CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build                    -ldflags="-w -s" -o _/uproxy_darwin_arm64 .
 CGO_ENABLED=0 GOOS=freebsd GOARCH=386 go build                     -ldflags="-w -s" -o _/uproxy_freebsd_386 .
@@ -35,10 +27,3 @@ CGO_ENABLED=0 GOOS=openbsd GOARCH=amd64 go build                   -ldflags="-w 
 CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build                   -ldflags="-w -s" -o _/uproxy_windows_amd64.exe .
 CGO_ENABLED=0 GOOS=windows GOARCH=386 go build                     -ldflags="-w -s" -o _/uproxy_windows_386.exe .
 CGO_ENABLED=0 GOOS=windows GOARCH=arm64 go build                   -ldflags="-w -s" -o _/uproxy_windows_arm64.exe .
-
-if [ "$1" = "dev" ]
-then
-    exit
-fi
-
-rm -rf _
