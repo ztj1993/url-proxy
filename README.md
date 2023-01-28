@@ -24,7 +24,7 @@ docker run --rm -v "$PWD":/srv -w /srv golang:1.18 ./build.sh dev
 docker build -t ztj1993/url-proxy:latest .
 ```
 
-## Run
+### Run
 ```
 docker run -d --restart=always -p 8888:8888 ztj1993/url-proxy:latest
 ```
