@@ -17,6 +17,7 @@ import (
 var (
 	addr    = flag.String("addr", ":8888", "http server addr")
 	forward = flag.String("forward", "", "forward config file")
+	cache   = flag.String("cache", "", "cache directory")
 )
 
 //in 判断字符串是否存在于数组中
@@ -59,7 +60,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 	}
 
 	//缓存文件信息
-	name := ".cache/" + strings.Replace(uri, "://", "/", 1)
+	name := filepath.Join(*cache, strings.Replace(uri, "://", "/", 1))
 	stat, _ := os.Stat(name)
 
 	//转发处理
@@ -175,10 +176,29 @@ func forwardConfig() map[string]string {
 	return forwards
 }
 
+func cacheConfig() {
+	//默认使用临时目录
+	if cache == nil || *cache == "" {
+		*cache = os.TempDir()
+	}
+
+	//打印缓存目录
+	log.Printf("cache dir: %s", *cache)
+
+	//缓存目录是否存在
+	_, err := os.Stat(*cache)
+	if err != nil {
+		log.Fatal("cache directory does not exist")
+	}
+}
+
 //main 程序入口
 func main() {
 	//解析命令行
 	flag.Parse()
+
+	//缓存目录
+	cacheConfig()
 
 	//转发处理
 	forwards := forwardConfig()
