@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -14,7 +15,8 @@ import (
 )
 
 var (
-	addr = flag.String("addr", ":8888", "http server addr")
+	addr    = flag.String("addr", ":8888", "http server addr")
+	forward = flag.String("forward", "", "forward config file")
 )
 
 //in 判断字符串是否存在于数组中
@@ -37,28 +39,33 @@ func copyHeader(dst http.Header, src http.Header) {
 }
 
 //Handler 请求处理程序
-func Handler(w http.ResponseWriter, r *http.Request) {
-	//获取 URI 并且必须大于 6 个字符
+func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string) {
 	uri := r.URL.Path[1:]
-	if len(uri) < 6 {
-		log.Printf("uri err: %s", uri)
+	log.Printf("req: %s", uri)
+	//获取 URI 并且必须大于 6 个字符
+	uris, err := url.Parse(uri)
+	if err != nil {
+		log.Printf("uri err: %s", err)
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
 
 	//判断 URI 是否符合指定的模式
-	prefixes := []string{"ftp://", "http:/", "https:"}
-	if !in(uri[0:6], prefixes) {
+	prefixes := []string{"ftp", "http", "https"}
+	if !in(uris.Scheme, prefixes) {
 		log.Printf("uri err: %s", uri)
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
 
-	log.Printf("req: %s", uri)
-
 	//缓存文件信息
 	name := ".cache/" + strings.Replace(uri, "://", "/", 1)
 	stat, _ := os.Stat(name)
+
+	//转发处理
+	if _, ok := forwards[uris.Host]; ok {
+		uri = forwards[uris.Host] + "/" + uri
+	}
 
 	//请求远端文件
 	resp, err := http.Get(uri)
@@ -127,15 +134,61 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 }
 
+//forwardConfig 转发配置
+func forwardConfig() map[string]string {
+	forwards := make(map[string]string)
+	//跳过转发
+	if forward == nil || *forward == "" {
+		return nil
+	} else {
+		log.Printf("forward config file: %s", *forward)
+	}
+
+	//转发文件不存在
+	_, err := os.Stat(*forward)
+	if err != nil {
+		log.Fatal("forward config file does not exist")
+	}
+
+	//打开转发文件
+	fd, err := os.Open(*forward)
+	if err != nil {
+		return nil
+	}
+
+	//按行拆分扫描器
+	fc := bufio.NewScanner(fd)
+	fc.Split(bufio.ScanLines)
+
+	//按行读取
+	for fc.Scan() {
+		rule := strings.Fields(fc.Text())
+		if len(rule) == 2 {
+			forwards[rule[0]] = rule[1]
+		} else {
+			continue
+		}
+	}
+
+	_ = fd.Close()
+
+	return forwards
+}
+
 //main 程序入口
 func main() {
 	//解析命令行
 	flag.Parse()
 
+	//转发处理
+	forwards := forwardConfig()
+
 	//HTTP Server
 	server := &http.Server{
-		Addr:    *addr,
-		Handler: http.HandlerFunc(Handler),
+		Addr: *addr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			Handler(w, r, forwards)
+		}),
 	}
 	log.Printf("http server: %s", *addr)
 	log.Fatal(server.ListenAndServe())
