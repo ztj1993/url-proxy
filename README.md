@@ -14,7 +14,7 @@ go run .\url-proxy.go -addr :8888
 
 ### Build
 ```
-docker run --rm -v "$PWD":/srv -w /srv golang:1.18 ./build.sh dev
+docker run --rm -v "$PWD":/srv -w /srv golang:1.18 ./build.sh
 ```
 
 ## Docker
