@@ -41,7 +41,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	//获取 URI 并且必须大于 6 个字符
 	uri := r.URL.Path[1:]
 	if len(uri) < 6 {
-		log.Printf("uri err - %s", uri)
+		log.Printf("uri err: %s", uri)
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
@@ -49,12 +49,12 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	//判断 URI 是否符合指定的模式
 	prefixes := []string{"ftp://", "http:/", "https:"}
 	if !in(uri[0:6], prefixes) {
-		log.Printf("uri err - %s", uri)
+		log.Printf("uri err: %s", uri)
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
 
-	log.Printf("req - %s", uri)
+	log.Printf("req: %s", uri)
 
 	//缓存文件信息
 	name := ".cache/" + strings.Replace(uri, "://", "/", 1)
@@ -63,7 +63,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	//请求远端文件
 	resp, err := http.Get(uri)
 	if err != nil {
-		log.Printf("get err - %s", err)
+		log.Printf("get err: %s", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -90,7 +90,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	dir := filepath.Dir(name)
 	err = os.MkdirAll(dir, 0755)
 	if err != nil {
-		log.Printf("make dir err - %s", err)
+		log.Printf("make dir err: %s", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -103,7 +103,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(tmp)
 	}(file)
 	if err != nil {
-		log.Printf("file create err - %s", err)
+		log.Printf("file create err: %s", err)
 		w.WriteHeader(http.StatusInternalServerError)
 		return
 	}
@@ -113,7 +113,7 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 	mw := io.MultiWriter(w, f)
 	_, err = io.Copy(mw, resp.Body)
 	if err != nil {
-		log.Printf("io copy err - %s", err)
+		log.Printf("io copy err: %s", err)
 		http.Error(w, "", http.StatusInternalServerError)
 		return
 	}
@@ -137,6 +137,6 @@ func main() {
 		Addr:    *addr,
 		Handler: http.HandlerFunc(Handler),
 	}
-	log.Printf("http server - %s", *addr)
+	log.Printf("http server: %s", *addr)
 	log.Fatal(server.ListenAndServe())
 }
