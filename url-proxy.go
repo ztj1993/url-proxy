@@ -1,10 +1,16 @@
 package main
 
 import (
+	"bufio"
 	"flag"
 	"io"
 	"log"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"time"
 )
 
 var (
@@ -50,6 +56,10 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 
 	log.Printf("req - %s", uri)
 
+	//缓存文件信息
+	name := ".cache/" + strings.Replace(uri, "://", "/", 1)
+	stat, _ := os.Stat(name)
+
 	//请求远端文件
 	resp, err := http.Get(uri)
 	if err != nil {
@@ -61,10 +71,60 @@ func Handler(w http.ResponseWriter, r *http.Request) {
 		_ = Body.Close()
 	}(resp.Body)
 
-	//响应文件
+	//响应头
 	copyHeader(w.Header(), resp.Header)
+
+	//响应内容
+	length, _ := strconv.ParseInt(
+		resp.Header.Get("Content-Length"), 10, 64,
+	)
+
+	//直接返回文件内容
+	if stat != nil && stat.Size() == length {
+		file, _ := os.Open(name)
+		_, _ = io.Copy(w, file)
+		return
+	}
+
+	//创建写入目录
+	dir := filepath.Dir(name)
+	err = os.MkdirAll(dir, 0755)
+	if err != nil {
+		log.Printf("make dir err - %s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	//创建临时文件
+	tmp := name + "." + strconv.FormatInt(time.Now().UnixNano(), 10)
+	file, err := os.Create(tmp)
+	defer func(file *os.File) {
+		_ = file.Close()
+		_ = os.Remove(tmp)
+	}(file)
+	if err != nil {
+		log.Printf("file create err - %s", err)
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	//写入文件和响应
+	f := bufio.NewWriter(file)
+	mw := io.MultiWriter(w, f)
+	_, err = io.Copy(mw, resp.Body)
+	if err != nil {
+		log.Printf("io copy err - %s", err)
+		http.Error(w, "", http.StatusInternalServerError)
+		return
+	}
+
+	//刷入文件并重命名文件
+	_ = f.Flush()
+	_ = file.Close()
+	_ = os.Rename(tmp, name)
+
+	//状态码
 	w.WriteHeader(resp.StatusCode)
-	_, _ = io.Copy(w, resp.Body)
 }
 
 //main 程序入口
