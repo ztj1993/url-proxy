@@ -12,15 +12,17 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
 var (
-	addr    = flag.String("addr", ":8888", "http server addr")
-	forward = flag.String("forward", "", "forward config file")
-	cache   = flag.String("cache", "", "cache directory")
-	jobs    = make(map[string]*DownloadJob)
-	jobsMu  sync.Mutex
+	addr      = flag.String("addr", ":8888", "http server addr")
+	forward   = flag.String("forward", "", "forward config file")
+	cache     = flag.String("cache", "", "cache directory")
+	jobs      = make(map[string]*DownloadJob)
+	jobsMu    sync.Mutex
+	requestID uint64
 )
 
 //DownloadJob 下载任务状态管理
@@ -85,12 +87,13 @@ func copyHeader(dst http.Header, src http.Header) {
 
 //Handler 请求处理程序
 func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string) {
+	reqID := atomic.AddUint64(&requestID, 1)
 	uri := r.URL.Path[1:]
-	log.Printf("req: %s", uri)
+	log.Printf("[%d] req: %s", reqID, uri)
 	//获取 URI 并且必须大于 6 个字符
 	uris, err := url.Parse(uri)
 	if err != nil {
-		log.Printf("uri err: %s", err)
+		log.Printf("[%d] uri err: %s", reqID, err)
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
@@ -98,7 +101,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 	//判断 URI 是否符合指定的模式
 	prefixes := []string{"ftp", "http", "https"}
 	if !in(uris.Scheme, prefixes) {
-		log.Printf("uri err: %s", uri)
+		log.Printf("[%d] uri err: %s", reqID, uri)
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
 		return
 	}
@@ -108,6 +111,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 
 	// Leader 负责下载数据
 	if isLeader {
+		log.Printf("[%d] job leader: %s", reqID, uri)
 		go func() {
 			defer removeJob(uri)
 			// 确保结束时唤醒所有等待者
@@ -128,10 +132,11 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 				targetUri = forwards[uris.Host] + "/" + uri
 			}
 
+			log.Printf("[%d] job download: %s", reqID, targetUri)
 			//请求远端文件
 			resp, err := http.Get(targetUri)
 			if err != nil {
-				log.Printf("get err: %s", err)
+				log.Printf("[%d] get err: %s", reqID, err)
 				job.Err = err
 				close(job.HeaderDone)
 				return
@@ -150,6 +155,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 
 			//如果缓存已存在且完整，直接使用
 			if stat != nil && stat.Size() == length {
+				log.Printf("[%d] job cached: %s", reqID, uri)
 				job.FilePath = name
 				close(job.HeaderDone)
 				return
@@ -162,7 +168,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			tmp := name + "." + strconv.FormatInt(time.Now().UnixNano(), 10)
 			file, err := os.Create(tmp)
 			if err != nil {
-				log.Printf("file create err: %s", err)
+				log.Printf("[%d] file create err: %s", reqID, err)
 				job.Err = err
 				close(job.HeaderDone)
 				return
@@ -178,7 +184,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 				if n > 0 {
 					_, wErr := file.Write(buf[:n])
 					if wErr != nil {
-						log.Printf("file write err: %s", wErr)
+						log.Printf("[%d] file write err: %s", reqID, wErr)
 						break
 					}
 					// 广播：有新数据了
@@ -190,6 +196,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 					break
 				}
 			}
+			log.Printf("[%d] job finished: %s", reqID, uri)
 
 			_ = file.Close()
 			_ = os.Rename(tmp, name)
@@ -198,7 +205,10 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			// 这里的实现侧重于 Linux/Docker 环境。
 			// 如果必须支持 Windows 完美 Rename，需要更复杂的锁机制。
 			job.FilePath = name
+			log.Printf("[%d] job renamed: %s", reqID, name)
 		}()
+	} else {
+		log.Printf("[%d] job follower: %s", reqID, uri)
 	}
 
 	// 等待 Header 可用
@@ -217,7 +227,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 	// 注意：如果是 Follower，这里打开的可能是正在写入的 tmp 文件
 	file, err := os.Open(job.FilePath)
 	if err != nil {
-		log.Printf("file open err: %s", err)
+		log.Printf("[%d] file open err: %s", reqID, err)
 		return
 	}
 	defer file.Close()
@@ -228,6 +238,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 		n, err := file.Read(buf)
 		if n > 0 {
 			if _, wErr := w.Write(buf[:n]); wErr != nil {
+				log.Printf("[%d] client write err (cancelled)", reqID)
 				return
 			}
 		}
@@ -236,6 +247,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			select {
 			case <-job.Done:
 				// 下载已完成，且读到了 EOF，说明真的结束了
+				log.Printf("[%d] job done: %s", reqID, uri)
 				return
 			default:
 				// 下载未完成，等待新数据
@@ -244,7 +256,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 				job.Cond.L.Unlock()
 			}
 		} else if err != nil {
-			log.Printf("read err: %s", err)
+			log.Printf("[%d] read err: %s", reqID, err)
 			return
 		}
 	}
