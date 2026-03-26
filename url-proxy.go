@@ -36,6 +36,10 @@ type DownloadJob struct {
 	Err        error
 	Cond       *sync.Cond // 用于广播新数据写入
 	Mu         sync.Mutex // 配合 Cond 使用
+	Readers    int32      // 当前正在读取 Followers 的数量
+	RenameMu   sync.Mutex // 用于保护 Rename 操作
+	FinalName  string     // 最终缓存文件名
+	TmpName    string     // 临时文件名
 }
 
 //getDownloadJob 获取或创建下载任务
@@ -64,6 +68,37 @@ func removeJob(uri string) {
 	jobsMu.Lock()
 	delete(jobs, uri)
 	jobsMu.Unlock()
+}
+
+//tryRename 尝试重命名文件
+func (job *DownloadJob) tryRename(reqID uint64) {
+	job.RenameMu.Lock()
+	defer job.RenameMu.Unlock()
+
+	// 如果已经重命名成功，或者临时文件不存在，则直接返回
+	if _, err := os.Stat(job.FinalName); err == nil {
+		log.Printf("[%d] rename skipped: final file already exists %s", reqID, job.FinalName)
+		return
+	}
+	if _, err := os.Stat(job.TmpName); os.IsNotExist(err) {
+		log.Printf("[%d] rename skipped: tmp file does not exist %s", reqID, job.TmpName)
+		return
+	}
+
+	// 只有当没有 Readers 时才尝试重命名 (主要针对 Windows)
+	readers := atomic.LoadInt32(&job.Readers)
+	if readers == 0 {
+		log.Printf("[%d] attempting rename: %s -> %s", reqID, job.TmpName, job.FinalName)
+		err := os.Rename(job.TmpName, job.FinalName)
+		if err == nil {
+			job.FilePath = job.FinalName
+			log.Printf("[%d] job renamed successfully: %s", reqID, job.FinalName)
+		} else {
+			log.Printf("[%d] job rename failed: %v", reqID, err)
+		}
+	} else {
+		log.Printf("[%d] rename skipped: file is still being read by %d followers", reqID, readers)
+	}
 }
 
 //in 判断字符串是否存在于数组中
@@ -166,6 +201,11 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			_ = os.MkdirAll(dir, 0755)
 
 			tmp := name + "." + strconv.FormatInt(time.Now().UnixNano(), 10)
+
+			// 记录文件名，供 tryRename 使用
+			job.FinalName = name
+			job.TmpName = tmp
+
 			file, err := os.Create(tmp)
 			if err != nil {
 				log.Printf("[%d] file create err: %s", reqID, err)
@@ -199,13 +239,9 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			log.Printf("[%d] job finished: %s", reqID, uri)
 
 			_ = file.Close()
-			_ = os.Rename(tmp, name)
-			// 更新路径为最终文件，虽然 Followers 可能还在读 tmp，但在 Linux 下没问题
-			// Windows 下 Followers 必须关闭文件才能 Rename，这是一个已知限制。
-			// 这里的实现侧重于 Linux/Docker 环境。
-			// 如果必须支持 Windows 完美 Rename，需要更复杂的锁机制。
-			job.FilePath = name
-			log.Printf("[%d] job renamed: %s", reqID, name)
+			
+			// Leader 下载完成后，尝试重命名
+			job.tryRename(reqID)
 		}()
 	} else {
 		log.Printf("[%d] job follower: %s", reqID, uri)
@@ -223,14 +259,29 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 	copyHeader(w.Header(), job.Header)
 	w.WriteHeader(job.StatusCode)
 
+	// 增加 Reader 计数
+	atomic.AddInt32(&job.Readers, 1)
+
 	// 打开文件进行读取
 	// 注意：如果是 Follower，这里打开的可能是正在写入的 tmp 文件
 	file, err := os.Open(job.FilePath)
 	if err != nil {
 		log.Printf("[%d] file open err: %s", reqID, err)
+		atomic.AddInt32(&job.Readers, -1) // 失败时减少计数
 		return
 	}
-	defer file.Close()
+	defer func() {
+		_ = file.Close()
+		// Reader 退出时减少计数
+		if atomic.AddInt32(&job.Readers, -1) == 0 {
+			// 如果我是最后一个 Reader，且 Leader 已经完成下载，尝试重命名
+			select {
+			case <-job.Done:
+				job.tryRename(reqID)
+			default:
+			}
+		}
+	}()
 
 	// 流式发送数据
 	buf := make([]byte, 32*1024)
