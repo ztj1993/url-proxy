@@ -23,6 +23,10 @@ type DownloadJob struct {
     Done       chan struct{} // Signal that download is complete
     Cond       *sync.Cond    // Broadcast "new data written"
     Mu         sync.Mutex    // Used with Cond
+    Readers    int32         // Number of Followers currently reading
+    RenameMu   sync.Mutex    // Protects the rename operation
+    FinalName  string        // Final cache file name
+    TmpName    string        // Temporary file name
 }
 ```
 
@@ -38,26 +42,40 @@ Use the local file system as a buffer to enable **Catch-up**:
     - **Catch-up Phase**: Reads the already downloaded part (e.g., first 50%) as fast as disk IO allows.
     - **Sync Phase**: After reaching the End of File (EOF), automatically switches to `Wait` mode to follow the Leader's write progress in real-time.
 
+### 3.4 Resolving Windows File Locking Issues (Reference Counting)
+On Windows, `os.Rename` fails if the temporary file is still open for reading by any Follower. This is solved by introducing **Reference Counting**:
+- **Increment**: When a client (Leader or Follower) opens the file for streaming, the `Readers` counter is incremented by 1.
+- **Decrement**: When the file is closed (download completes or client disconnects), `Readers` is decremented by 1 in a `defer` block.
+- **Delayed Renaming (`tryRename`)**:
+    - The Leader attempts to rename upon download completion. If `Readers > 0`, it skips the rename.
+    - The last Follower to close the file (when `Readers` reaches 0) checks if the Leader has finished downloading. If so, it performs the rename operation on behalf of the Leader.
+
+### 3.5 Observability and Log Tracing
+To accurately track request states in high-concurrency scenarios:
+- **Request ID (`reqID`)**: Introduced a global atomic counter `requestID uint64` to assign a unique ID to every incoming HTTP request.
+- **Log Correlation**: All relevant logs are prefixed with `[reqID]` (e.g., `[1] req: ...`), providing a clear trace of the entire lifecycle: request arrival, role assignment (Leader/Follower), streaming, and file renaming.
+
 ## 4. Workflow
 
 ### Scenario Demo: Downloading a 1GB File
-1.  **T=0 (Leader)**: User A initiates a request.
+1.  **T=0 (Leader)**: User A initiates a request `[reqID=1]`.
     -   System creates a `DownloadJob`.
     -   Starts downloading and writing to `temp.dat`.
-2.  **T=5 (Follower)**: User B initiates the same request.
+2.  **T=5 (Follower)**: User B initiates the same request `[reqID=2]`.
     -   At this point, `temp.dat` has 500MB of data.
     -   System detects an existing `DownloadJob`, B joins as a Follower.
-    -   B opens `temp.dat` and **instantly reads** the first 500MB.
+    -   B opens `temp.dat`, `Readers` increments by 1, and B **instantly reads** the first 500MB.
 3.  **T=5.1 (Sync)**: B finishes reading 500MB and catches up with A's progress.
     -   B enters `Cond.Wait()` state.
     -   As A writes every 32KB, B receives a notification and sends data to the client.
 4.  **T=10 (Finish)**: Download completes.
     -   A closes the `Done` channel.
-    -   `temp.dat` is renamed to the final cache file.
-    -   All users complete the download.
+    -   A attempts to rename `temp.dat`, but since B is still reading (`Readers=1`), the rename is skipped.
+    -   B receives the final data and closes the connection, `Readers` decrements to 0.
+    -   B triggers `tryRename` and successfully renames `temp.dat` to the final cache file.
 
 ## 5. Benefits
 1.  **Bandwidth Savings**: Regardless of the number of concurrent downloads, upstream bandwidth consumption remains constant at 1 unit.
 2.  **Instant Response**: Late-joining users receive downloaded data immediately without waiting.
-3.  **Resource Efficiency**: Uses file system caching, resulting in very low memory usage (only a small buffer required).
-4.  **Concurrency Safety**: Strictly controls concurrency via `sync.Mutex` and `sync.Cond` to avoid race conditions.
+3.  **Cross-Platform Compatibility**: Perfectly resolves the Windows file-in-use issue, ensuring cache files are correctly persisted.
+4.  **Strong Traceability**: The `reqID`-based logging system makes concurrent states and abnormal behaviors clear at a glance.
