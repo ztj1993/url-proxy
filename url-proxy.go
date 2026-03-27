@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -120,6 +121,53 @@ func copyHeader(dst http.Header, src http.Header) {
 	}
 }
 
+//getSafeUrlPath 根据 URL 生成安全的本地缓存相对路径
+//规则: 协议-域名-端口/请求路径/url编码后的(文件名?参数)
+func getSafeUrlPath(rawUri string) string {
+	u, err := url.Parse(rawUri)
+	if err != nil {
+		// 解析失败回退为完全编码
+		return url.QueryEscape(rawUri)
+	}
+
+	// 1. 协议-域名-端口 (替换 : 为 - 防止 Windows 路径错误)
+	hostStr := u.Host
+	hostStr = strings.ReplaceAll(hostStr, ":", "-")
+	
+	schemeHostDir := u.Scheme + "-" + hostStr
+	if u.Scheme == "" {
+		schemeHostDir = hostStr
+	}
+
+	// 2. 请求路径
+	pDir := path.Dir(u.Path)
+	pBase := path.Base(u.Path)
+
+	// 如果是以 / 结尾，说明全是目录，文件名为 index
+	if strings.HasSuffix(u.Path, "/") {
+		pDir = u.Path
+		pBase = "index"
+	}
+
+	// 根目录处理
+	if pDir == "/" || pDir == "." {
+		pDir = ""
+	}
+	if pBase == "/" || pBase == "." {
+		pBase = "index"
+	}
+
+	// 3. 文件和参数拼接后编码当文件
+	fileAndQuery := pBase
+	if u.RawQuery != "" {
+		fileAndQuery += "?" + u.RawQuery
+	}
+
+	encodedFileName := url.QueryEscape(fileAndQuery)
+
+	return filepath.Join(schemeHostDir, filepath.FromSlash(pDir), encodedFileName)
+}
+
 //Handler 请求处理程序
 func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string) {
 	reqID := atomic.AddUint64(&requestID, 1)
@@ -158,7 +206,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			defer close(job.Done)
 
 			//缓存文件路径
-			name := filepath.Join(*cache, strings.Replace(uri, "://", "/", 1))
+			name := filepath.Join(*cache, getSafeUrlPath(uri))
 			stat, _ := os.Stat(name)
 
 			//转发处理
