@@ -37,13 +37,13 @@ type DownloadJob struct {
 	HeaderDone chan struct{} // Header 准备好信号
 	Done       chan struct{} // 下载完成信号
 	Err        error
-	Cond       *sync.Cond // 用于广播新数据写入
-	Mu         sync.Mutex // 配合 Cond 使用
-	Readers    int32      // 当前正在读取 Followers 的数量
-	RenameMu   sync.Mutex // 用于保护 Rename 操作
-	FinalName  string     // 最终缓存文件名
-	TmpName    string     // 临时文件名
-	LastActive time.Time  // 最后一次成功读取数据的时间戳
+	Cond       *sync.Cond         // 用于广播新数据写入
+	Mu         sync.Mutex         // 配合 Cond 使用
+	Readers    int32              // 当前正在读取 Followers 的数量
+	RenameMu   sync.Mutex         // 用于保护 Rename 操作
+	FinalName  string             // 最终缓存文件名
+	TmpName    string             // 临时文件名
+	LastActive time.Time          // 最后一次成功读取数据的时间戳
 	Cancel     context.CancelFunc // 用于取消底层 HTTP 请求
 }
 
