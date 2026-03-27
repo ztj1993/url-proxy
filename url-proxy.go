@@ -20,7 +20,6 @@ import (
 
 var (
 	addr      = flag.String("addr", ":8888", "http server addr")
-	forward   = flag.String("forward", "", "forward config file")
 	cache     = flag.String("cache", "", "cache directory")
 	idleTime  = flag.Duration("idle-time", 10*time.Minute, "idle timeout for hanging downloads (default 10m)")
 	jobs      = make(map[string]*DownloadJob)
@@ -409,24 +408,38 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 //forwardConfig 转发配置
 func forwardConfig() map[string]string {
 	forwards := make(map[string]string)
-	//跳过转发
-	if forward == nil || *forward == "" {
-		return nil
-	} else {
-		log.Printf("forward config file: %s", *forward)
+
+	// 定义可能的配置文件名
+	configFiles := []string{
+		"forwarding.conf", // 当前工作目录
 	}
 
-	//转发文件不存在
-	_, err := os.Stat(*forward)
-	if err != nil {
-		log.Fatal("forward config file does not exist")
+	// 尝试获取可执行文件所在目录
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		configFiles = append(configFiles, filepath.Join(exeDir, "forwarding.conf"))
 	}
 
-	//打开转发文件
-	fd, err := os.Open(*forward)
-	if err != nil {
+	var fd *os.File
+	var err error
+	var loadedFile string
+
+	// 按顺序尝试打开配置文件
+	for _, file := range configFiles {
+		fd, err = os.Open(file)
+		if err == nil {
+			loadedFile = file
+			break
+		}
+	}
+
+	// 如果所有路径都没有找到配置文件，则跳过转发
+	if fd == nil {
 		return nil
 	}
+	defer fd.Close()
+
+	log.Printf("forward config file loaded: %s", loadedFile)
 
 	//按行拆分扫描器
 	fc := bufio.NewScanner(fd)
@@ -441,8 +454,6 @@ func forwardConfig() map[string]string {
 			continue
 		}
 	}
-
-	_ = fd.Close()
 
 	return forwards
 }

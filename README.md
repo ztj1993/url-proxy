@@ -35,6 +35,11 @@ Support forwarding to other url-proxy programs.
 
 支持转发到其它的 url-proxy 程序。
 
+Create a `forwarding.conf` file in the current working directory or the directory where the executable is located.
+The program will automatically detect and load it.
+
+在当前工作目录或可执行文件所在目录下创建 `forwarding.conf` 文件，程序会自动检测并加载。
+
 forwarding.conf
 ```
 github.com http://192.168.100.1:8888
@@ -43,5 +48,5 @@ google.com http://192.168.99.1:8888
 
 run:
 ```
-go run .\url-proxy.go -forward ./forwarding.conf
+go run .\url-proxy.go
 ```
