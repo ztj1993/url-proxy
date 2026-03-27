@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"io"
 	"log"
@@ -21,6 +22,7 @@ var (
 	addr      = flag.String("addr", ":8888", "http server addr")
 	forward   = flag.String("forward", "", "forward config file")
 	cache     = flag.String("cache", "", "cache directory")
+	idleTime  = flag.Duration("idle-time", 10*time.Minute, "idle timeout for hanging downloads (default 10m)")
 	jobs      = make(map[string]*DownloadJob)
 	jobsMu    sync.Mutex
 	requestID uint64
@@ -41,6 +43,8 @@ type DownloadJob struct {
 	RenameMu   sync.Mutex // 用于保护 Rename 操作
 	FinalName  string     // 最终缓存文件名
 	TmpName    string     // 临时文件名
+	LastActive time.Time  // 最后一次成功读取数据的时间戳
+	Cancel     context.CancelFunc // 用于取消底层 HTTP 请求
 }
 
 //getDownloadJob 获取或创建下载任务
@@ -58,6 +62,7 @@ func getDownloadJob(uri string) (*DownloadJob, bool) {
 		HeaderDone: make(chan struct{}),
 		Done:       make(chan struct{}),
 		Header:     make(http.Header),
+		LastActive: time.Now(),
 	}
 	job.Cond = sync.NewCond(&job.Mu)
 	jobs[uri] = job
@@ -89,6 +94,13 @@ func (job *DownloadJob) tryRename(reqID uint64) {
 	// 只有当没有 Readers 时才尝试重命名 (主要针对 Windows)
 	readers := atomic.LoadInt32(&job.Readers)
 	if readers == 0 {
+		// 如果任务发生错误，则删除临时文件，不进行重命名
+		if job.Err != nil {
+			log.Printf("[%d] job has error (%v), removing tmp file: %s", reqID, job.Err, job.TmpName)
+			_ = os.Remove(job.TmpName)
+			return
+		}
+
 		log.Printf("[%d] attempting rename: %s -> %s", reqID, job.TmpName, job.FinalName)
 		err := os.Rename(job.TmpName, job.FinalName)
 		if err == nil {
@@ -133,7 +145,7 @@ func getSafeUrlPath(rawUri string) string {
 	// 1. 协议-域名-端口 (替换 : 为 - 防止 Windows 路径错误)
 	hostStr := u.Host
 	hostStr = strings.ReplaceAll(hostStr, ":", "-")
-	
+
 	schemeHostDir := u.Scheme + "-" + hostStr
 	if u.Scheme == "" {
 		schemeHostDir = hostStr
@@ -216,8 +228,22 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			}
 
 			log.Printf("[%d] job download: %s", reqID, targetUri)
+
+			// 创建带有 Cancel 的 Context，用于空闲超时控制
+			ctx, cancel := context.WithCancel(context.Background())
+			job.Cancel = cancel
+			defer cancel()
+
+			req, err := http.NewRequestWithContext(ctx, "GET", targetUri, nil)
+			if err != nil {
+				log.Printf("[%d] req create err: %s", reqID, err)
+				job.Err = err
+				close(job.HeaderDone)
+				return
+			}
+
 			//请求远端文件
-			resp, err := http.Get(targetUri)
+			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
 				log.Printf("[%d] get err: %s", reqID, err)
 				job.Err = err
@@ -270,9 +296,15 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			for {
 				n, err := resp.Body.Read(buf)
 				if n > 0 {
+					// 更新最后活跃时间
+					job.Mu.Lock()
+					job.LastActive = time.Now()
+					job.Mu.Unlock()
+
 					_, wErr := file.Write(buf[:n])
 					if wErr != nil {
 						log.Printf("[%d] file write err: %s", reqID, wErr)
+						job.Err = wErr
 						break
 					}
 					// 广播：有新数据了
@@ -281,13 +313,22 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 					job.Cond.L.Unlock()
 				}
 				if err != nil {
+					if err != io.EOF {
+						job.Err = err
+					}
+					// 检查是否是因为超时被 Cancel 掉的
+					if err == context.Canceled {
+						log.Printf("[%d] job cancelled due to idle timeout: %s", reqID, uri)
+					} else if err != io.EOF {
+						log.Printf("[%d] job read err: %s", reqID, err)
+					}
 					break
 				}
 			}
 			log.Printf("[%d] job finished: %s", reqID, uri)
 
 			_ = file.Close()
-			
+
 			// Leader 下载完成后，尝试重命名
 			job.tryRename(reqID)
 		}()
@@ -346,7 +387,11 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			select {
 			case <-job.Done:
 				// 下载已完成，且读到了 EOF，说明真的结束了
-				log.Printf("[%d] job done: %s", reqID, uri)
+				if job.Err != nil {
+					log.Printf("[%d] job done with error: %v", reqID, job.Err)
+				} else {
+					log.Printf("[%d] job done: %s", reqID, uri)
+				}
 				return
 			default:
 				// 下载未完成，等待新数据
@@ -418,6 +463,42 @@ func cacheConfig() {
 	}
 }
 
+//initWatchdog 初始化后台巡检，清理超时挂起的任务
+func initWatchdog() {
+	if *idleTime <= 0 {
+		*idleTime = 10 * time.Minute
+	}
+
+	// 内部自动推导巡检时间：为超时时间的 1/3，以保证及时发现且不占用过多资源
+	checkTime := *idleTime / 3
+
+	log.Printf("watchdog started: idle-time=%v, internal-check-time=%v", *idleTime, checkTime)
+
+	go func() {
+		ticker := time.NewTicker(checkTime)
+		defer ticker.Stop()
+		for range ticker.C {
+			jobsMu.Lock()
+			now := time.Now()
+			for uri, job := range jobs {
+				job.Mu.Lock()
+				// 如果超过设定的空闲时间没有数据读写，并且请求还未完成
+				if now.Sub(job.LastActive) > *idleTime {
+					if job.Cancel != nil {
+						log.Printf("watchdog: killing idle job: %s, inactive for %v", uri, now.Sub(job.LastActive))
+						job.Cancel()
+						// 注意：不要在这里直接 delete(jobs, uri)
+						// Cancel() 会触发 Leader 的 Read 返回 context.Canceled 错误
+						// 随后 Leader 会退出循环并执行其 defer 块中的 removeJob 和资源清理
+					}
+				}
+				job.Mu.Unlock()
+			}
+			jobsMu.Unlock()
+		}
+	}()
+}
+
 //main 程序入口
 func main() {
 	//解析命令行
@@ -428,6 +509,9 @@ func main() {
 
 	//转发处理
 	forwards := forwardConfig()
+
+	// 启动后台巡检
+	initWatchdog()
 
 	//HTTP Server
 	server := &http.Server{
