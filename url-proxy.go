@@ -259,6 +259,54 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 		return
 	}
 
+	// 处理 HTTP Range 分片请求与 206 断点续传
+	if r.Header.Get("Range") != "" {
+		cachePath := filepath.Join(*cache, getSafeUrlPath(uri))
+		if stat, err := os.Stat(cachePath); err == nil && !stat.IsDir() {
+			// 本地存在已下载完成的完整缓存，直接通过 http.ServeFile 高效处理 Range 分片
+			log.Printf("[%d] range hit local cache: %s (%s)", reqID, uri, r.Header.Get("Range"))
+			http.ServeFile(w, r, cachePath)
+			return
+		}
+
+		// 本地无完整缓存，直接向上游发起透传 Range 请求，纯流式返回，不落盘（避免局部脏切片污染完整文件缓存）
+		log.Printf("[%d] range relay to upstream: %s (%s)", reqID, uri, r.Header.Get("Range"))
+		targetUri := uri
+		if _, ok := forwards[uris.Host]; ok {
+			targetUri = forwards[uris.Host] + "/" + uri
+		}
+
+		req, err := http.NewRequestWithContext(r.Context(), "GET", targetUri, nil)
+		if err != nil {
+			log.Printf("[%d] req create err: %s", reqID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		// 透传 Range、If-Range、条件协商与客户端特征头
+		rangeRelayHeaders := []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "User-Agent"}
+		for _, h := range rangeRelayHeaders {
+			if val := r.Header.Get(h); val != "" {
+				req.Header.Set(h, val)
+			}
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("[%d] upstream range get err: %s", reqID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+
+		copyHeader(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
+		return
+	}
+
 	//获取任务 (Request Coalescing)
 	job, isLeader := getDownloadJob(uri)
 
@@ -419,6 +467,7 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 
 	// 发送响应头
 	copyHeader(w.Header(), job.Header)
+	w.Header().Set("Accept-Ranges", "bytes")
 	w.WriteHeader(job.StatusCode)
 
 	// 如果是 304 Not Modified，无需读取和传输 Body，直接返回
