@@ -300,6 +300,14 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 				return
 			}
 
+			// 透传客户端的条件请求头 (用于 304 缓存协商)
+			conditionalHeaders := []string{"If-Modified-Since", "If-None-Match"}
+			for _, h := range conditionalHeaders {
+				if val := r.Header.Get(h); val != "" {
+					req.Header.Set(h, val)
+				}
+			}
+
 			//请求远端文件
 			resp, err := http.DefaultClient.Do(req)
 			if err != nil {
@@ -315,6 +323,13 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 			//设置 Job 信息
 			job.StatusCode = resp.StatusCode
 			copyHeader(job.Header, resp.Header)
+
+			// 如果上游返回 304 Not Modified，无需拉取 Body，直接短路通知并返回
+			if resp.StatusCode == http.StatusNotModified {
+				log.Printf("[%d] job not modified (304): %s", reqID, uri)
+				close(job.HeaderDone)
+				return
+			}
 
 			length, _ := strconv.ParseInt(
 				resp.Header.Get("Content-Length"), 10, 64,
@@ -405,6 +420,12 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 	// 发送响应头
 	copyHeader(w.Header(), job.Header)
 	w.WriteHeader(job.StatusCode)
+
+	// 如果是 304 Not Modified，无需读取和传输 Body，直接返回
+	if job.StatusCode == http.StatusNotModified {
+		log.Printf("[%d] 304 response sent: %s", reqID, uri)
+		return
+	}
 
 	// 增加 Reader 计数
 	atomic.AddInt32(&job.Readers, 1)
