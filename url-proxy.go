@@ -4,8 +4,10 @@ import (
 	"bufio"
 	"context"
 	"flag"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -182,7 +184,64 @@ func getSafeUrlPath(rawUri string) string {
 //Handler 请求处理程序
 func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string) {
 	reqID := atomic.AddUint64(&requestID, 1)
-	uri := r.URL.Path[1:]
+
+	// 处理 HTTPS CONNECT 隧道代理 (用于标准正向代理下的 HTTPS 透传)
+	if r.Method == http.MethodConnect {
+		log.Printf("[%d] connect tunnel: %s", reqID, r.Host)
+		destConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
+		if err != nil {
+			log.Printf("[%d] connect dial err: %v", reqID, err)
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		hijacker, ok := w.(http.Hijacker)
+		if !ok {
+			log.Printf("[%d] connect hijack not supported", reqID)
+			http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
+			_ = destConn.Close()
+			return
+		}
+		clientConn, _, err := hijacker.Hijack()
+		if err != nil {
+			log.Printf("[%d] connect hijack err: %v", reqID, err)
+			http.Error(w, err.Error(), http.StatusServiceUnavailable)
+			_ = destConn.Close()
+			return
+		}
+		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
+		go func() {
+			defer destConn.Close()
+			defer clientConn.Close()
+			_, _ = io.Copy(destConn, clientConn)
+		}()
+		go func() {
+			defer destConn.Close()
+			defer clientConn.Close()
+			_, _ = io.Copy(clientConn, destConn)
+		}()
+		return
+	}
+
+	// 提取目标 URI：兼容标准 HTTP 正向代理模式与路径前缀代理模式
+	var uri string
+	if r.URL.IsAbs() || (r.URL.Host != "" && r.URL.Scheme != "") {
+		// 标准正向代理模式: GET http://example.com/path HTTP/1.1
+		uri = r.URL.String()
+	} else if r.URL.Host != "" {
+		// 部分正向代理客户端可能 Scheme 为空但 Host 存在，默认使用 http
+		scheme := "http"
+		if r.TLS != nil {
+			scheme = "https"
+		}
+		uri = fmt.Sprintf("%s://%s%s", scheme, r.URL.Host, r.URL.RequestURI())
+	} else if len(r.URL.Path) > 1 {
+		// 路径前缀代理模式: GET /http://example.com/path HTTP/1.1
+		uri = r.URL.Path[1:]
+		if r.URL.RawQuery != "" {
+			uri += "?" + r.URL.RawQuery
+		}
+	}
+
 	log.Printf("[%d] req: %s", reqID, uri)
 	//获取 URI 并且必须大于 6 个字符
 	uris, err := url.Parse(uri)
