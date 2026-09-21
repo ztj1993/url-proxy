@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,6 +24,7 @@ import (
 var (
 	addr      = flag.String("addr", ":8888", "http server addr")
 	cache     = flag.String("cache", "", "cache directory")
+	conf      = flag.String("conf", "proxy.conf", "path to unified proxy configuration file")
 	idleTime  = flag.Duration("idle-time", 10*time.Minute, "idle timeout for hanging downloads (default 10m)")
 	jobs      = make(map[string]*DownloadJob)
 	jobsMu    sync.Mutex
@@ -182,8 +184,13 @@ func getSafeUrlPath(rawUri string) string {
 }
 
 //Handler 请求处理程序
-func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string) {
+func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 	reqID := atomic.AddUint64(&requestID, 1)
+
+	var forwards map[string]string
+	if config != nil {
+		forwards = config.Forwards
+	}
 
 	// 处理 HTTPS CONNECT 隧道代理 (用于标准正向代理下的 HTTPS 透传)
 	if r.Method == http.MethodConnect {
@@ -534,57 +541,160 @@ func Handler(w http.ResponseWriter, r *http.Request, forwards map[string]string)
 	}
 }
 
-//forwardConfig 转发配置
-func forwardConfig() map[string]string {
-	forwards := make(map[string]string)
+// NoCacheRule 免缓存与缓存保护规则 (用于 Feature 305)
+type NoCacheRule struct {
+	Scope   string         // 作用域: "*", "/dists/", "archive.ubuntu.com", "archive.ubuntu.com/dists/"
+	Action  string         // 动作: "bypass" (免缓存) 或 "cache" (白名单例外，强制缓存)
+	Type    string         // 匹配类型: "exact", "prefix", "suffix", "regex"
+	Pattern string         // 匹配模式串
+	Regexp  *regexp.Regexp // 当 Type 为 "regex" 时的预编译正则表达式
+}
 
-	// 定义可能的配置文件名
-	configFiles := []string{
-		"forwarding.conf", // 当前工作目录
+// ProxyConfig 统一代理配置结构
+type ProxyConfig struct {
+	Aliases      map[string]string // 短别名映射 (Feature 306): short_alias -> upstream_base_url
+	Forwards     map[string]string // 域名转发映射 (Feature 103): source_host -> gateway_base_url
+	NoCacheRules []NoCacheRule     // 免缓存与白名单例外规则 (Feature 305)
+	SourceFile   string            // 实际生效的配置文件路径或说明
+}
+
+// NewProxyConfig 初始化统一配置对象
+func NewProxyConfig() *ProxyConfig {
+	return &ProxyConfig{
+		Aliases:      make(map[string]string),
+		Forwards:     make(map[string]string),
+		NoCacheRules: make([]NoCacheRule, 0),
 	}
+}
 
-	// 尝试获取可执行文件所在目录
-	if exePath, err := os.Executable(); err == nil {
-		exeDir := filepath.Dir(exePath)
-		configFiles = append(configFiles, filepath.Join(exeDir, "forwarding.conf"))
-	}
+// parseProxyConfig 解析 proxy.conf 统一配置流
+func parseProxyConfig(r io.Reader) (*ProxyConfig, error) {
+	cfg := NewProxyConfig()
+	scanner := bufio.NewScanner(r)
 
-	var fd *os.File
-	var err error
-	var loadedFile string
-
-	// 按顺序尝试打开配置文件
-	for _, file := range configFiles {
-		fd, err = os.Open(file)
-		if err == nil {
-			loadedFile = file
-			break
-		}
-	}
-
-	// 如果所有路径都没有找到配置文件，则跳过转发
-	if fd == nil {
-		return nil
-	}
-	defer fd.Close()
-
-	log.Printf("forward config file loaded: %s", loadedFile)
-
-	//按行拆分扫描器
-	fc := bufio.NewScanner(fd)
-	fc.Split(bufio.ScanLines)
-
-	//按行读取
-	for fc.Scan() {
-		rule := strings.Fields(fc.Text())
-		if len(rule) == 2 {
-			forwards[rule[0]] = rule[1]
-		} else {
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
+
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+
+		directive := strings.ToLower(fields[0])
+		switch directive {
+		case "alias":
+			if len(fields) >= 3 {
+				cfg.Aliases[fields[1]] = fields[2]
+			} else {
+				log.Printf("invalid alias directive (expected 'alias <name> <upstream_url>'): %s", line)
+			}
+		case "forward":
+			if len(fields) >= 3 {
+				cfg.Forwards[fields[1]] = fields[2]
+			} else {
+				log.Printf("invalid forward directive (expected 'forward <host> <gateway_url>'): %s", line)
+			}
+		case "bypass", "nocache":
+			if len(fields) >= 4 {
+				rule := NoCacheRule{
+					Scope:   fields[1],
+					Action:  "bypass",
+					Type:    strings.ToLower(fields[2]),
+					Pattern: strings.Join(fields[3:], " "),
+				}
+				if rule.Type == "regex" {
+					re, err := regexp.Compile(rule.Pattern)
+					if err != nil {
+						log.Printf("invalid regex in bypass rule: %s: %v", rule.Pattern, err)
+						continue
+					}
+					rule.Regexp = re
+				}
+				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
+			} else {
+				log.Printf("invalid bypass directive: %s", line)
+			}
+		case "cache":
+			if len(fields) >= 4 {
+				rule := NoCacheRule{
+					Scope:   fields[1],
+					Action:  "cache",
+					Type:    strings.ToLower(fields[2]),
+					Pattern: strings.Join(fields[3:], " "),
+				}
+				if rule.Type == "regex" {
+					re, err := regexp.Compile(rule.Pattern)
+					if err != nil {
+						log.Printf("invalid regex in cache rule: %s: %v", rule.Pattern, err)
+						continue
+					}
+					rule.Regexp = re
+				}
+				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
+			} else {
+				log.Printf("invalid cache directive: %s", line)
+			}
+		default:
+			log.Printf("unrecognized config directive: %s", line)
+		}
+	}
+	return cfg, scanner.Err()
+}
+
+// logProxyConfigSummary 打印统一配置加载汇总日志
+func logProxyConfigSummary(cfg *ProxyConfig) {
+	log.Printf("proxy configuration summary [%s]: %d aliases, %d forwards, %d cache/bypass rules",
+		cfg.SourceFile, len(cfg.Aliases), len(cfg.Forwards), len(cfg.NoCacheRules))
+}
+
+// loadProxyConfig 加载统一代理配置，支持多级自动探测机制
+func loadProxyConfig(confPath string) *ProxyConfig {
+	// 1. 若用户在命令行显式指定了自定义路径（且不是默认未指定的 "proxy.conf"）
+	if confPath != "" && confPath != "proxy.conf" {
+		if f, err := os.Open(confPath); err == nil {
+			defer f.Close()
+			cfg, err := parseProxyConfig(f)
+			if err == nil {
+				cfg.SourceFile = confPath
+				log.Printf("proxy config loaded from explicit CLI argument: %s", confPath)
+				logProxyConfigSummary(cfg)
+				return cfg
+			}
+			log.Printf("failed to parse config file %s: %v", confPath, err)
+		} else {
+			log.Printf("specified config file not found: %s: %v", confPath, err)
+		}
 	}
 
-	return forwards
+	// 2. 自动探测 proxy.conf (优先当前目录，次选二进制所在目录)
+	searchPaths := []string{"proxy.conf"}
+	if exePath, err := os.Executable(); err == nil {
+		exeDir := filepath.Dir(exePath)
+		searchPaths = append(searchPaths, filepath.Join(exeDir, "proxy.conf"))
+	}
+
+	for _, p := range searchPaths {
+		if f, err := os.Open(p); err == nil {
+			defer f.Close()
+			cfg, err := parseProxyConfig(f)
+			if err == nil {
+				cfg.SourceFile = p
+				log.Printf("proxy config file loaded: %s", p)
+				logProxyConfigSummary(cfg)
+				return cfg
+			}
+			log.Printf("failed to parse config file %s: %v", p, err)
+		}
+	}
+
+	// 3. 未找到配置文件，使用默认空配置
+	cfg := NewProxyConfig()
+	cfg.SourceFile = "(none)"
+	log.Printf("no proxy configuration found, using empty default configuration")
+	return cfg
 }
 
 func cacheConfig() {
@@ -647,8 +757,8 @@ func main() {
 	//缓存目录
 	cacheConfig()
 
-	//转发处理
-	forwards := forwardConfig()
+	//加载统一代理配置
+	proxyConfig := loadProxyConfig(*conf)
 
 	// 启动后台巡检
 	initWatchdog()
@@ -657,7 +767,7 @@ func main() {
 	server := &http.Server{
 		Addr: *addr,
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			Handler(w, r, forwards)
+			Handler(w, r, proxyConfig)
 		}),
 	}
 	log.Printf("http server: %s", *addr)
