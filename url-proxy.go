@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"flag"
 	"fmt"
@@ -272,10 +274,12 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 	var aliases map[string]string
 	var forwards map[string]string
 	var nocacheRules []NoCacheRule
+	var rewriter *BodyRewriter
 	if config != nil {
 		aliases = config.Aliases
 		forwards = config.Forwards
 		nocacheRules = config.NoCacheRules
+		rewriter = config.Rewriter
 	}
 
 	// 处理 HTTPS CONNECT 隧道代理 (用于标准正向代理下的 HTTPS 透传)
@@ -384,9 +388,15 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 		}
 	}
 
-	// 检查是否命中动态免缓存规则 (免缓存资源直接纯流式透传，严禁落盘)
-	if shouldBypassCache(uri, nocacheRules) {
-		log.Printf("[%d] cache bypass (dynamic resource): %s", reqID, uri)
+	hasRewriteMatch := rewriter != nil && rewriter.MightMatchRequest(r.URL.Path, uri)
+
+	// 检查是否命中动态免缓存规则或响应体重写规则 (免缓存与重写资源直接纯流式透传，严禁落盘)
+	if shouldBypassCache(uri, nocacheRules) || hasRewriteMatch {
+		if hasRewriteMatch {
+			log.Printf("[%d] dynamic body rewrite target: %s", reqID, uri)
+		} else {
+			log.Printf("[%d] cache bypass (dynamic resource): %s", reqID, uri)
+		}
 		targetUri := uri
 		if _, ok := forwards[uris.Host]; ok {
 			targetUri = forwards[uris.Host] + "/" + uri
@@ -407,6 +417,11 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 			}
 		}
 
+		// 如果匹配重写规则，注入 Accept-Encoding: identity 确保拉取未压缩的明文字符流
+		if hasRewriteMatch {
+			req.Header.Set("Accept-Encoding", "identity")
+		}
+
 		resp, err := http.DefaultClient.Do(req)
 		if err != nil {
 			log.Printf("[%d] upstream bypass get err: %s", reqID, err)
@@ -418,6 +433,46 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 		}()
 
 		copyHeader(w.Header(), resp.Header)
+
+		// 检查是否应当执行响应体动态重写
+		if rewriter != nil && rewriter.ShouldRewrite(r.URL.Path, uri, resp.Header.Get("Content-Type")) && resp.StatusCode == http.StatusOK {
+			clientHost := r.Host
+			if clientHost == "" {
+				clientHost = r.URL.Host
+			}
+			if clientHost == "" {
+				clientHost = *addr
+			}
+
+			var reader io.Reader = resp.Body
+			if resp.Header.Get("Content-Encoding") == "gzip" {
+				if gz, err := gzip.NewReader(resp.Body); err == nil {
+					defer gz.Close()
+					reader = gz
+					w.Header().Del("Content-Encoding")
+				}
+			}
+
+			rawBody, err := io.ReadAll(reader)
+			if err != nil {
+				log.Printf("[%d] read body err: %v", reqID, err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			rewrittenBody := rewriter.Apply(clientHost, r.URL.Path, uri, resp.Header.Get("Content-Type"), rawBody)
+
+			// 剥离原 ETag 与 Content-MD5，更新 Content-Length
+			w.Header().Del("ETag")
+			w.Header().Del("Content-MD5")
+			w.Header().Set("Content-Length", strconv.Itoa(len(rewrittenBody)))
+
+			log.Printf("[%d] body rewritten (%d -> %d bytes): %s", reqID, len(rawBody), len(rewrittenBody), uri)
+			w.WriteHeader(resp.StatusCode)
+			_, _ = w.Write(rewrittenBody)
+			return
+		}
+
 		w.WriteHeader(resp.StatusCode)
 		_, _ = io.Copy(w, resp.Body)
 		return
@@ -707,21 +762,355 @@ type NoCacheRule struct {
 	Regexp  *regexp.Regexp // 当 Type 为 "regex" 时的预编译正则表达式
 }
 
+// TypeDefinition 内容类型定义 (Feature 311)
+type TypeDefinition struct {
+	Name     string   // 类型别名 (如 "html", "json", "pypi", "text")
+	Mimes    []string // 匹配的 Content-Type 列表 (如 "text/html", "application/json", "application/vnd.pypi.simple*")
+	Suffixes []string // 匹配的 URL/文件名后缀列表 (如 ".html", ".htm", ".json")
+}
+
+// defaultTypeDefinitions 获取系统内置默认内容类型
+func defaultTypeDefinitions() map[string]TypeDefinition {
+	return map[string]TypeDefinition{
+		"html": {
+			Name:     "html",
+			Mimes:    []string{"text/html", "application/xhtml+xml"},
+			Suffixes: []string{".html", ".htm", ".xhtml"},
+		},
+		"json": {
+			Name:     "json",
+			Mimes:    []string{"application/json", "application/vnd.npm.install-v1+json"},
+			Suffixes: []string{".json"},
+		},
+		"xml": {
+			Name:     "xml",
+			Mimes:    []string{"text/xml", "application/xml"},
+			Suffixes: []string{".xml"},
+		},
+		"pypi": {
+			Name:     "pypi",
+			Mimes:    []string{"text/html", "application/vnd.pypi.simple"},
+			Suffixes: []string{".html"},
+		},
+		"text": {
+			Name:     "text",
+			Mimes:    []string{"text/"},
+			Suffixes: []string{".txt", ".text"},
+		},
+	}
+}
+
+// RewriteRule 响应体动态重写规则 (Feature 311)
+type RewriteRule struct {
+	Scope       string // 生效的作用域路径前缀 (如 "/pypi/simple/", "/npm/")
+	TypeSpec    string // 内容类型规格 (如 "type:json", "type:pypi", "mime:text/html", "suffix:.json", "*" 或空)
+	Pattern     string // 待匹配的目标字符串 (如 "https://files.pythonhosted.org/")
+	Replacement string // 替换目标字符串模板，支持 {PROXY_HOST} 宏变量
+}
+
+// BodyRewriter 响应体动态流式/内存重写器 (Feature 311)
+type BodyRewriter struct {
+	Rules []RewriteRule
+	Types map[string]TypeDefinition
+}
+
+// NewBodyRewriter 创建重写器实例
+func NewBodyRewriter(rules []RewriteRule, types map[string]TypeDefinition) *BodyRewriter {
+	return &BodyRewriter{
+		Rules: rules,
+		Types: types,
+	}
+}
+
+// MatchRules 匹配适用于当前请求路径的重写规则作用域
+func (rw *BodyRewriter) MatchRules(reqPath, uri string) []RewriteRule {
+	if rw == nil || len(rw.Rules) == 0 {
+		return nil
+	}
+	normPath := reqPath
+	if !strings.HasPrefix(normPath, "/") {
+		normPath = "/" + normPath
+	}
+	var matched []RewriteRule
+	for _, r := range rw.Rules {
+		scope := r.Scope
+		normScope := scope
+		if !strings.HasPrefix(normScope, "/") {
+			normScope = "/" + normScope
+		}
+		if strings.HasPrefix(normPath, normScope) || strings.HasPrefix(reqPath, scope) || strings.HasPrefix(uri, scope) || strings.Contains(uri, scope) {
+			matched = append(matched, r)
+		}
+	}
+	return matched
+}
+
+// isKnownBinaryPath 检查 URL/路径是否显式为已知二进制安装包或压缩归档
+func isKnownBinaryPath(path string) bool {
+	cleanPath := strings.ToLower(path)
+	if idx := strings.IndexAny(cleanPath, "?#"); idx != -1 {
+		cleanPath = cleanPath[:idx]
+	}
+	binaryExts := []string{
+		".whl", ".tar.gz", ".tgz", ".tar.xz", ".tar.bz2",
+		".deb", ".udeb", ".rpm", ".apk", ".crate",
+		".zip", ".7z", ".iso", ".img", ".bin", ".exe", ".msi",
+		".jar", ".war", ".aar",
+		".png", ".jpg", ".jpeg", ".gif", ".ico", ".svg", ".webp",
+	}
+	for _, ext := range binaryExts {
+		if strings.HasSuffix(cleanPath, ext) {
+			return true
+		}
+	}
+	return false
+}
+
+// isBinaryMimeType 检查 Content-Type 是否属于二进制类型 (严禁重写)
+func isBinaryMimeType(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return strings.Contains(ct, "application/octet-stream") ||
+		strings.Contains(ct, "application/zip") ||
+		strings.Contains(ct, "application/x-gzip") ||
+		strings.Contains(ct, "application/gzip") ||
+		strings.Contains(ct, "application/x-debian-package") ||
+		strings.Contains(ct, "application/x-redhat-package-manager") ||
+		strings.Contains(ct, "application/x-tar") ||
+		strings.HasPrefix(ct, "image/") ||
+		strings.HasPrefix(ct, "audio/") ||
+		strings.HasPrefix(ct, "video/") ||
+		strings.HasPrefix(ct, "font/")
+}
+
+// isTextualMimeType 判断 Content-Type 是否为可安全重写的文本类型 (避免误改二进制流)
+func isTextualMimeType(contentType string) bool {
+	ct := strings.ToLower(contentType)
+	return strings.Contains(ct, "text/html") ||
+		strings.Contains(ct, "text/plain") ||
+		strings.Contains(ct, "text/xml") ||
+		strings.Contains(ct, "text/css") ||
+		strings.Contains(ct, "application/json") ||
+		strings.Contains(ct, "application/xml") ||
+		strings.Contains(ct, "application/xhtml") ||
+		strings.Contains(ct, "application/vnd.pypi.simple") ||
+		strings.Contains(ct, "application/vnd.npm") ||
+		strings.Contains(ct, "application/javascript") ||
+		strings.Contains(ct, "application/x-javascript") ||
+		strings.Contains(ct, "text/javascript")
+}
+
+// MightMatchRequest 在向上游发起请求前，检查请求是否可能是重写目标 (用于决定是否走直通流与 identity 编码)
+func (rw *BodyRewriter) MightMatchRequest(reqPath, uri string) bool {
+	if rw == nil || len(rw.Rules) == 0 {
+		return false
+	}
+	rules := rw.MatchRules(reqPath, uri)
+	if len(rules) == 0 {
+		return false
+	}
+
+	cleanPath := strings.ToLower(reqPath)
+	if idx := strings.IndexAny(cleanPath, "?#"); idx != -1 {
+		cleanPath = cleanPath[:idx]
+	}
+
+	for _, r := range rules {
+		// 如果请求是已知二进制包 (如 .tgz, .whl, .deb)
+		if isKnownBinaryPath(cleanPath) {
+			// 仅当规则显式声明了该后缀时才可能匹配
+			if strings.HasPrefix(strings.ToLower(r.TypeSpec), "suffix:") {
+				ext := strings.TrimPrefix(strings.ToLower(r.TypeSpec), "suffix:")
+				if !strings.HasPrefix(ext, ".") {
+					ext = "." + ext
+				}
+				if strings.HasSuffix(cleanPath, ext) {
+					return true
+				}
+			}
+			continue
+		}
+
+		spec := strings.ToLower(strings.TrimSpace(r.TypeSpec))
+		if spec == "" || spec == "*" || spec == "all" {
+			return true
+		}
+
+		if strings.HasPrefix(spec, "suffix:") {
+			ext := strings.TrimPrefix(spec, "suffix:")
+			if !strings.HasPrefix(ext, ".") {
+				ext = "." + ext
+			}
+			if strings.HasSuffix(cleanPath, ext) {
+				return true
+			}
+			continue
+		}
+
+		if strings.HasPrefix(spec, "type:") {
+			typeName := strings.TrimPrefix(spec, "type:")
+			if tDef, ok := rw.Types[typeName]; ok {
+				hasDot := strings.Contains(filepath.Base(cleanPath), ".")
+				if hasDot {
+					for _, s := range tDef.Suffixes {
+						if strings.HasSuffix(cleanPath, s) {
+							return true
+						}
+					}
+				} else {
+					return true
+				}
+			} else {
+				return true
+			}
+			continue
+		}
+
+		return true
+	}
+
+	return false
+}
+
+// RuleMatchesResponse 检查单条重写规则是否匹配实际响应头 Content-Type 及路径
+func (rw *BodyRewriter) RuleMatchesResponse(r RewriteRule, reqPath, uri, contentType string) bool {
+	ct := strings.ToLower(contentType)
+	cleanPath := strings.ToLower(reqPath)
+	if idx := strings.IndexAny(cleanPath, "?#"); idx != -1 {
+		cleanPath = cleanPath[:idx]
+	}
+
+	// 二进制保护：若响应为二进制 MIME，除非显式配置，否则直接拒绝
+	if isBinaryMimeType(ct) {
+		return false
+	}
+
+	spec := strings.ToLower(strings.TrimSpace(r.TypeSpec))
+
+	// 缺省或通配符：匹配所有安全文本 MIME 类型
+	if spec == "" || spec == "*" || spec == "all" {
+		return isTextualMimeType(contentType)
+	}
+
+	// 1. type:<name> (类型别名)
+	if strings.HasPrefix(spec, "type:") {
+		typeName := strings.TrimPrefix(spec, "type:")
+		tDef, ok := rw.Types[typeName]
+		if !ok {
+			return isTextualMimeType(contentType)
+		}
+		for _, m := range tDef.Mimes {
+			if strings.HasSuffix(m, "*") {
+				if strings.HasPrefix(ct, strings.TrimSuffix(m, "*")) {
+					return true
+				}
+			} else {
+				if strings.Contains(ct, m) {
+					return true
+				}
+			}
+		}
+		for _, s := range tDef.Suffixes {
+			if strings.HasSuffix(cleanPath, s) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// 2. mime:<pattern> (直接匹配 Content-Type)
+	if strings.HasPrefix(spec, "mime:") {
+		pattern := strings.TrimPrefix(spec, "mime:")
+		if strings.HasSuffix(pattern, "*") {
+			return strings.HasPrefix(ct, strings.TrimSuffix(pattern, "*"))
+		}
+		return strings.Contains(ct, pattern)
+	}
+
+	// 3. suffix:<ext> (直接匹配文件后缀)
+	if strings.HasPrefix(spec, "suffix:") {
+		ext := strings.TrimPrefix(spec, "suffix:")
+		if !strings.HasPrefix(ext, ".") {
+			ext = "." + ext
+		}
+		return strings.HasSuffix(cleanPath, ext)
+	}
+
+	// 容错：若未带 type: 但命中已声明类型别名
+	if tDef, ok := rw.Types[spec]; ok {
+		for _, m := range tDef.Mimes {
+			if strings.HasSuffix(m, "*") {
+				if strings.HasPrefix(ct, strings.TrimSuffix(m, "*")) {
+					return true
+				}
+			} else {
+				if strings.Contains(ct, m) {
+					return true
+				}
+			}
+		}
+		for _, s := range tDef.Suffixes {
+			if strings.HasSuffix(cleanPath, s) {
+				return true
+			}
+		}
+		return false
+	}
+
+	return isTextualMimeType(contentType)
+}
+
+// ShouldRewrite 判定当前请求和响应是否应当触发响应体重写
+func (rw *BodyRewriter) ShouldRewrite(reqPath, uri, contentType string) bool {
+	if rw == nil || len(rw.Rules) == 0 {
+		return false
+	}
+	rules := rw.MatchRules(reqPath, uri)
+	for _, r := range rules {
+		if rw.RuleMatchesResponse(r, reqPath, uri, contentType) {
+			return true
+		}
+	}
+	return false
+}
+
+// Apply 执行重写替换
+func (rw *BodyRewriter) Apply(clientHost string, reqPath, uri, contentType string, body []byte) []byte {
+	rules := rw.MatchRules(reqPath, uri)
+	if len(rules) == 0 {
+		return body
+	}
+	res := body
+	for _, r := range rules {
+		if rw.RuleMatchesResponse(r, reqPath, uri, contentType) {
+			target := strings.ReplaceAll(r.Replacement, "{PROXY_HOST}", clientHost)
+			res = bytes.ReplaceAll(res, []byte(r.Pattern), []byte(target))
+		}
+	}
+	return res
+}
+
 // ProxyConfig 统一代理配置结构
 type ProxyConfig struct {
-	Aliases      map[string]string // 短别名映射 (Feature 306): short_alias -> upstream_base_url
-	Forwards     map[string]string // 域名转发映射 (Feature 103): source_host -> gateway_base_url
-	NoCacheRules []NoCacheRule     // 免缓存与白名单例外规则 (Feature 305)
-	SourceFile   string            // 实际生效的配置文件路径或说明
+	Aliases      map[string]string         // 短别名映射 (Feature 306): short_alias -> upstream_base_url
+	Forwards     map[string]string         // 域名转发映射 (Feature 103): source_host -> gateway_base_url
+	NoCacheRules []NoCacheRule             // 免缓存与白名单例外规则 (Feature 305)
+	Types        map[string]TypeDefinition // 内容类型定义 (Feature 311): type_name -> TypeDefinition
+	RewriteRules []RewriteRule             // 响应体动态重写规则 (Feature 311)
+	Rewriter     *BodyRewriter             // 重写器实例 (Feature 311)
+	SourceFile   string                    // 实际生效的配置文件路径或说明
 }
 
 // NewProxyConfig 初始化统一配置对象
 func NewProxyConfig() *ProxyConfig {
-	return &ProxyConfig{
+	cfg := &ProxyConfig{
 		Aliases:      make(map[string]string),
 		Forwards:     make(map[string]string),
 		NoCacheRules: make([]NoCacheRule, 0),
+		Types:        defaultTypeDefinitions(),
+		RewriteRules: make([]RewriteRule, 0),
 	}
+	cfg.Rewriter = NewBodyRewriter(cfg.RewriteRules, cfg.Types)
+	return cfg
 }
 
 // parseProxyConfig 解析 proxy.conf 统一配置流
@@ -744,7 +1133,8 @@ func parseProxyConfig(r io.Reader) (*ProxyConfig, error) {
 		switch directive {
 		case "alias":
 			if len(fields) >= 3 {
-				cfg.Aliases[fields[1]] = fields[2]
+				name := strings.TrimPrefix(fields[1], "/")
+				cfg.Aliases[name] = fields[2]
 			} else {
 				log.Printf("invalid alias directive (expected 'alias <name> <upstream_url>'): %s", line)
 			}
@@ -794,17 +1184,72 @@ func parseProxyConfig(r io.Reader) (*ProxyConfig, error) {
 			} else {
 				log.Printf("invalid cache directive: %s", line)
 			}
+		case "type":
+			if len(fields) >= 2 {
+				name := strings.ToLower(fields[1])
+				tDef, exists := cfg.Types[name]
+				if !exists {
+					tDef = TypeDefinition{Name: name}
+				}
+				for _, spec := range fields[2:] {
+					lowerSpec := strings.ToLower(spec)
+					if strings.HasPrefix(lowerSpec, "mime:") {
+						val := spec[5:]
+						tDef.Mimes = append(tDef.Mimes, strings.ToLower(val))
+					} else if strings.HasPrefix(lowerSpec, "suffix:") {
+						ext := spec[7:]
+						if !strings.HasPrefix(ext, ".") {
+							ext = "." + ext
+						}
+						tDef.Suffixes = append(tDef.Suffixes, strings.ToLower(ext))
+					} else {
+						if strings.Contains(spec, "/") {
+							tDef.Mimes = append(tDef.Mimes, strings.ToLower(spec))
+						} else {
+							ext := spec
+							if !strings.HasPrefix(ext, ".") {
+								ext = "." + ext
+							}
+							tDef.Suffixes = append(tDef.Suffixes, strings.ToLower(ext))
+						}
+					}
+				}
+				cfg.Types[name] = tDef
+			} else {
+				log.Printf("invalid type directive (expected 'type <name> <matcher>...'): %s", line)
+			}
+		case "rewrite":
+			if len(fields) >= 5 {
+				rule := RewriteRule{
+					Scope:       fields[1],
+					TypeSpec:    fields[2],
+					Pattern:     fields[3],
+					Replacement: fields[4],
+				}
+				cfg.RewriteRules = append(cfg.RewriteRules, rule)
+			} else if len(fields) == 4 {
+				rule := RewriteRule{
+					Scope:       fields[1],
+					TypeSpec:    "*",
+					Pattern:     fields[2],
+					Replacement: fields[3],
+				}
+				cfg.RewriteRules = append(cfg.RewriteRules, rule)
+			} else {
+				log.Printf("invalid rewrite directive (expected 'rewrite <scope> [type_spec] <pattern> <replacement>'): %s", line)
+			}
 		default:
 			log.Printf("unrecognized config directive: %s", line)
 		}
 	}
+	cfg.Rewriter = NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	return cfg, scanner.Err()
 }
 
 // logProxyConfigSummary 打印统一配置加载汇总日志
 func logProxyConfigSummary(cfg *ProxyConfig) {
-	log.Printf("proxy configuration summary [%s]: %d aliases, %d forwards, %d cache/bypass rules",
-		cfg.SourceFile, len(cfg.Aliases), len(cfg.Forwards), len(cfg.NoCacheRules))
+	log.Printf("proxy configuration summary [%s]: %d aliases, %d forwards, %d cache/bypass rules, %d types, %d rewrite rules",
+		cfg.SourceFile, len(cfg.Aliases), len(cfg.Forwards), len(cfg.NoCacheRules), len(cfg.Types), len(cfg.RewriteRules))
 }
 
 // loadProxyConfig 加载统一代理配置，支持多级自动探测机制
