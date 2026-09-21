@@ -792,12 +792,37 @@ func defaultTypeDefinitions() map[string]TypeDefinition {
 			Mimes:    []string{"text/html", "application/vnd.pypi.simple"},
 			Suffixes: []string{".html"},
 		},
+		"npm": {
+			Name:     "npm",
+			Mimes:    []string{"application/json", "application/vnd.npm"},
+			Suffixes: []string{".json"},
+		},
 		"text": {
 			Name:     "text",
 			Mimes:    []string{"text/"},
 			Suffixes: []string{".txt", ".text"},
 		},
 	}
+}
+
+// isNumericOrVersion 检查字符串是否为版本号格式 (如 "4.17.21", "v20.11.0")，避免将版本号中的点误判为文件后缀
+func isNumericOrVersion(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	trimmed := strings.TrimPrefix(s, "v")
+	if len(trimmed) == 0 || trimmed[0] < '0' || trimmed[0] > '9' {
+		return false
+	}
+	hasDot := false
+	for _, r := range trimmed {
+		if r == '.' {
+			hasDot = true
+		} else if (r < '0' || r > '9') && r != '-' && r != '+' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+			return false
+		}
+	}
+	return hasDot
 }
 
 // RewriteRule 响应体动态重写规则 (Feature 311)
@@ -955,8 +980,13 @@ func (rw *BodyRewriter) MightMatchRequest(reqPath, uri string) bool {
 		if strings.HasPrefix(spec, "type:") {
 			typeName := strings.TrimPrefix(spec, "type:")
 			if tDef, ok := rw.Types[typeName]; ok {
-				hasDot := strings.Contains(filepath.Base(cleanPath), ".")
-				if hasDot {
+				base := filepath.Base(cleanPath)
+				hasDot := strings.Contains(base, ".")
+				if hasDot && len(tDef.Suffixes) > 0 {
+					// 兼容 npm 生态包名点号 (socket.io, highlight.js) 以及语义化版本号 (4.17.21)
+					if typeName == "npm" || isNumericOrVersion(base) {
+						return true
+					}
 					for _, s := range tDef.Suffixes {
 						if strings.HasSuffix(cleanPath, s) {
 							return true
