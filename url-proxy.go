@@ -409,8 +409,8 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 			return
 		}
 
-		// 透传条件协商、Range与客户端特征头
-		bypassForwardHeaders := []string{"If-Modified-Since", "If-None-Match", "Range", "If-Range", "Cache-Control", "User-Agent"}
+		// 透传条件协商、Range与客户端特征头 (包括 PEP 691 内容协商所需 Accept)
+		bypassForwardHeaders := []string{"If-Modified-Since", "If-None-Match", "Range", "If-Range", "Cache-Control", "User-Agent", "Accept", "Accept-Language"}
 		for _, h := range bypassForwardHeaders {
 			if val := r.Header.Get(h); val != "" {
 				req.Header.Set(h, val)
@@ -831,6 +831,7 @@ func (rw *BodyRewriter) MatchRules(reqPath, uri string) []RewriteRule {
 	if !strings.HasPrefix(normPath, "/") {
 		normPath = "/" + normPath
 	}
+	trimmedNormPath := strings.TrimRight(normPath, "/")
 	var matched []RewriteRule
 	for _, r := range rw.Rules {
 		scope := r.Scope
@@ -838,7 +839,12 @@ func (rw *BodyRewriter) MatchRules(reqPath, uri string) []RewriteRule {
 		if !strings.HasPrefix(normScope, "/") {
 			normScope = "/" + normScope
 		}
-		if strings.HasPrefix(normPath, normScope) || strings.HasPrefix(reqPath, scope) || strings.HasPrefix(uri, scope) || strings.Contains(uri, scope) {
+		trimmedNormScope := strings.TrimRight(normScope, "/")
+		if strings.HasPrefix(normPath, normScope) ||
+			strings.HasPrefix(reqPath, scope) ||
+			strings.HasPrefix(uri, scope) ||
+			strings.Contains(uri, scope) ||
+			trimmedNormPath == trimmedNormScope {
 			matched = append(matched, r)
 		}
 	}
@@ -1079,10 +1085,12 @@ func (rw *BodyRewriter) Apply(clientHost string, reqPath, uri, contentType strin
 	if len(rules) == 0 {
 		return body
 	}
+	scheme := "http"
 	res := body
 	for _, r := range rules {
 		if rw.RuleMatchesResponse(r, reqPath, uri, contentType) {
 			target := strings.ReplaceAll(r.Replacement, "{PROXY_HOST}", clientHost)
+			target = strings.ReplaceAll(target, "{PROXY_SCHEME}", scheme)
 			res = bytes.ReplaceAll(res, []byte(r.Pattern), []byte(target))
 		}
 	}
