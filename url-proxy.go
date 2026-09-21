@@ -212,16 +212,22 @@ func (r *NoCacheRule) MatchScope(reqHost, reqPath string) bool {
 
 // MatchPattern 检查 URL 路径及文件名是否符合匹配模式
 func (r *NoCacheRule) MatchPattern(urlPath, baseName string) bool {
+	if r.Type == "*" || r.Type == "all" || r.Pattern == "*" {
+		return true
+	}
 	baseLower := strings.ToLower(baseName)
+	pathLower := strings.ToLower(urlPath)
 	patternLower := strings.ToLower(r.Pattern)
 
 	switch r.Type {
 	case "exact":
-		return baseLower == patternLower
+		return baseLower == patternLower || strings.Trim(pathLower, "/") == strings.Trim(patternLower, "/")
 	case "prefix":
-		return strings.HasPrefix(baseLower, patternLower)
+		return strings.HasPrefix(baseLower, patternLower) || strings.HasPrefix(pathLower, patternLower)
 	case "suffix":
-		return strings.HasSuffix(baseLower, patternLower)
+		return strings.HasSuffix(baseLower, patternLower) || strings.HasSuffix(pathLower, patternLower)
+	case "contains":
+		return strings.Contains(pathLower, patternLower) || strings.Contains(baseLower, patternLower)
 	case "regex":
 		if r.Regexp != nil {
 			return r.Regexp.MatchString(urlPath) || r.Regexp.MatchString(baseName)
@@ -402,15 +408,15 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 			targetUri = forwards[uris.Host] + "/" + uri
 		}
 
-		req, err := http.NewRequestWithContext(r.Context(), "GET", targetUri, nil)
+		req, err := http.NewRequestWithContext(r.Context(), r.Method, targetUri, nil)
 		if err != nil {
 			log.Printf("[%d] req create err: %s", reqID, err)
 			w.WriteHeader(http.StatusInternalServerError)
 			return
 		}
 
-		// 透传条件协商、Range与客户端特征头 (包括 PEP 691 内容协商所需 Accept)
-		bypassForwardHeaders := []string{"If-Modified-Since", "If-None-Match", "Range", "If-Range", "Cache-Control", "User-Agent", "Accept", "Accept-Language"}
+		// 透传条件协商、Range与客户端特征头 (包括 PEP 691 内容协商所需 Accept 与 Docker 鉴权所需的 Authorization)
+		bypassForwardHeaders := []string{"If-Modified-Since", "If-None-Match", "Range", "If-Range", "Cache-Control", "User-Agent", "Accept", "Accept-Language", "Authorization"}
 		for _, h := range bypassForwardHeaders {
 			if val := r.Header.Get(h); val != "" {
 				req.Header.Set(h, val)
@@ -478,6 +484,70 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 		return
 	}
 
+	// 针对内容寻址的不可变分层 Blob (/blobs/sha256:)，若本地已有完整缓存，直接高速直出，免除上游回源
+	if strings.Contains(uri, "/blobs/sha256:") {
+		cachePath := filepath.Join(*cache, getSafeUrlPath(uri))
+		if stat, err := os.Stat(cachePath); err == nil && !stat.IsDir() && stat.Size() > 0 {
+			log.Printf("[%d] blob hit local cache (direct serve): %s", reqID, uri)
+			w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.Header().Set("Content-Type", "application/octet-stream")
+			if r.Method == http.MethodHead {
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			http.ServeFile(w, r, cachePath)
+			return
+		}
+	}
+
+	// 处理 HTTP HEAD 请求 (特别是 Docker 镜像分层探测与常规元数据查询)
+	if r.Method == http.MethodHead {
+		cachePath := filepath.Join(*cache, getSafeUrlPath(uri))
+		if stat, err := os.Stat(cachePath); err == nil && !stat.IsDir() {
+			log.Printf("[%d] head hit local cache: %s", reqID, uri)
+			w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+			w.Header().Set("Accept-Ranges", "bytes")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+
+		// 本地无缓存，直接向上游发起透传 HEAD 请求
+		log.Printf("[%d] head relay to upstream: %s", reqID, uri)
+		targetUri := uri
+		if _, ok := forwards[uris.Host]; ok {
+			targetUri = forwards[uris.Host] + "/" + uri
+		}
+
+		req, err := http.NewRequestWithContext(r.Context(), http.MethodHead, targetUri, nil)
+		if err != nil {
+			log.Printf("[%d] req create err: %s", reqID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		headForwardHeaders := []string{"Authorization", "User-Agent", "Accept", "If-Modified-Since", "If-None-Match"}
+		for _, h := range headForwardHeaders {
+			if val := r.Header.Get(h); val != "" {
+				req.Header.Set(h, val)
+			}
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("[%d] upstream head err: %s", reqID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+
+		copyHeader(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		return
+	}
+
 	// 处理 HTTP Range 分片请求与 206 断点续传
 	if r.Header.Get("Range") != "" {
 		cachePath := filepath.Join(*cache, getSafeUrlPath(uri))
@@ -502,8 +572,8 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 			return
 		}
 
-		// 透传 Range、If-Range、条件协商与客户端特征头
-		rangeRelayHeaders := []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "User-Agent"}
+		// 透传 Range、If-Range、条件协商与客户端特征头 (包括 Docker 鉴权所需的 Authorization)
+		rangeRelayHeaders := []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "User-Agent", "Authorization"}
 		for _, h := range rangeRelayHeaders {
 			if val := r.Header.Get(h); val != "" {
 				req.Header.Set(h, val)
@@ -567,9 +637,9 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 				return
 			}
 
-			// 透传客户端的条件请求头 (用于 304 缓存协商)
-			conditionalHeaders := []string{"If-Modified-Since", "If-None-Match"}
-			for _, h := range conditionalHeaders {
+			// 透传客户端的条件请求头 (用于 304 缓存协商) 与鉴权/特征头 (用于 Docker 等源)
+			jobForwardHeaders := []string{"If-Modified-Since", "If-None-Match", "Authorization", "User-Agent"}
+			for _, h := range jobForwardHeaders {
 				if val := r.Header.Get(h); val != "" {
 					req.Header.Set(h, val)
 				}
@@ -1199,6 +1269,14 @@ func parseProxyConfig(r io.Reader) (*ProxyConfig, error) {
 					rule.Regexp = re
 				}
 				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
+			} else if len(fields) == 3 && fields[2] == "*" {
+				rule := NoCacheRule{
+					Scope:   fields[1],
+					Action:  "bypass",
+					Type:    "*",
+					Pattern: "*",
+				}
+				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
 			} else {
 				log.Printf("invalid bypass directive: %s", line)
 			}
@@ -1217,6 +1295,14 @@ func parseProxyConfig(r io.Reader) (*ProxyConfig, error) {
 						continue
 					}
 					rule.Regexp = re
+				}
+				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
+			} else if len(fields) == 3 && fields[2] == "*" {
+				rule := NoCacheRule{
+					Scope:   fields[1],
+					Action:  "cache",
+					Type:    "*",
+					Pattern: "*",
 				}
 				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
 			} else {
