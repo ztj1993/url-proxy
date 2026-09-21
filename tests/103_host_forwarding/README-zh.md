@@ -1,6 +1,12 @@
-# 域名规则转发配置测试指南
+# 域名规则转发配置测试指南（已废弃 / DEPRECATED）
 
-本文档介绍如何测试 `url-proxy` 的域名规则前缀转发配置（Host Forwarding Rules）功能。
+> [!WARNING]
+> **【已废弃 - 测试跳过 / DEPRECATED - SKIP】**
+> - **废弃说明**：本测试套件基于历史旧版本的 `forwarding.conf` 独立配置文件及无指令动词语法（`<host> <gateway>`）。自统一代理配置系统（Feature 304）发布后，`url-proxy` 已**全面废弃并彻底移除了对旧版 `forwarding.conf` 及无指令语法的向后兼容支持**。
+> - **替代方案**：域名转发能力已统一迁移至单一真理源配置文件 `proxy.conf`（语法规范为 `forward <host> <gateway>`）。最新完整验证请参见 [`tests/304_unified_config`](../304_unified_config/)。
+> - **自动化测试策略**：后续所有全量自动化测试与回归测试均**明确跳过（SKIP）**此测试套件，不再作为测试准入指标。
+
+本文档保留作为旧版本功能参考。
 
 ## 1. 测试原理
 

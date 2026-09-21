@@ -6,7 +6,12 @@ import (
 	"time"
 )
 
-// 这个服务器用于模拟前置镜像网关，用于验证 url-proxy 根据 forwarding.conf 进行特定域名规则重定向转发的能力。
+// 【已废弃 / DEPRECATED】
+// 本模拟服务器基于历史旧版本的 forwarding.conf 独立配置文件规范。
+// 自 Feature 304 统一配置系统发布后，域名转发功能已整合至 proxy.conf (forward 指令)。
+// 本测试套件已废弃并跳过执行。最新实现与测试请参考 tests/304_unified_config。
+//
+// 这个服务器用于模拟前置镜像网关，用于验证 url-proxy 根据 forwarding.conf 进行特定域名规则重定向转发的能力（历史保留）。
 func main() {
 	http.HandleFunc("/mirror/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Printf("[%s] [镜像网关] 成功接收到被转发重写的请求: %s\n", time.Now().Format(time.RFC3339), r.URL.RequestURI())

@@ -1,6 +1,12 @@
-# Host Forwarding Rules Test Guide
+# Host Forwarding Rules Test Guide (DEPRECATED)
 
-This document describes how to test the Host Forwarding Rules configuration in `url-proxy`.
+> [!WARNING]
+> **【DEPRECATED - SKIP IN TESTS】**
+> - **Deprecation Notice**: This test suite relies on the legacy standalone `forwarding.conf` configuration file and bare two-field syntax (`<host> <gateway>`). Starting from the unified proxy configuration system (Feature 304), `url-proxy` has **completely removed legacy backward compatibility for `forwarding.conf` and directive-less lines**.
+> - **Replacement**: Host forwarding rules have been migrated to the single source of truth `proxy.conf` using the `forward <host> <gateway>` directive syntax. Please refer to [`tests/304_unified_config`](../304_unified_config/) for up-to-date validation.
+> - **Automated Test Policy**: In all subsequent comprehensive and regression test suites, this test suite is **explicitly SKIPPED** and must not be treated as a release gate.
+
+This document is preserved as a historical reference.
 
 ## 1. Test Principle
 

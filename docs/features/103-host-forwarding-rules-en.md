@@ -1,4 +1,12 @@
-# Host Forwarding Rules Design Plan
+# Host Forwarding Rules Design Plan (DEPRECATED)
+
+> [!WARNING]
+> **【DEPRECATED】**
+> - **Deprecation Status**: The standalone `forwarding.conf` configuration file and bare two-field syntax (`<Host> <Prefix>`) described in this document have been **completely removed with zero backward compatibility**.
+> - **Evolutionary Replacement**: Host forwarding capabilities have been merged into **Feature 304 Unified Proxy Configuration System (`proxy.conf`)**, standardizing on the single-source-of-truth directive syntax: `forward <source_host> <gateway_base_url>`. For the modern specification, please see [`docs/features/304-unified-configuration-en.md`](304-unified-configuration-en.md).
+> - **Testing Status**: The corresponding test suite [`tests/103_host_forwarding`](../../tests/103_host_forwarding/) has been marked as deprecated and is explicitly SKIPPED in subsequent automated test runs. Please refer to [`tests/304_unified_config`](../../tests/304_unified_config/) for active test coverage.
+
+This document is preserved solely for historical reference.
 
 ## 1. Goal
 Support domain-specific (Host) rewriting or prefix forwarding rules via configuration. When `url-proxy` requests resources from a matching host, it automatically routes the upstream request through a configured mirror gateway or accelerator, making it seamless to use private mirrors or regional caching proxies.
