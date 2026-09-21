@@ -269,9 +269,11 @@ func shouldBypassCache(rawUri string, rules []NoCacheRule) bool {
 func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 	reqID := atomic.AddUint64(&requestID, 1)
 
+	var aliases map[string]string
 	var forwards map[string]string
 	var nocacheRules []NoCacheRule
 	if config != nil {
+		aliases = config.Aliases
 		forwards = config.Forwards
 		nocacheRules = config.NoCacheRules
 	}
@@ -342,12 +344,44 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 		return
 	}
 
-	//判断 URI 是否符合指定的模式
+	//判断 URI 是否符合指定的模式，若不符合则尝试匹配路径短别名路由 (Feature 306)
 	prefixes := []string{"ftp", "http", "https"}
 	if !in(uris.Scheme, prefixes) {
-		log.Printf("[%d] uri err: %s", reqID, uri)
-		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
-		return
+		pathOnly := strings.TrimPrefix(r.URL.Path, "/")
+		parts := strings.SplitN(pathOnly, "/", 2)
+		aliasKey := parts[0]
+
+		if targetBase, ok := aliases[aliasKey]; ok && aliasKey != "" {
+			rewrittenUri := strings.TrimRight(targetBase, "/")
+			if len(parts) > 1 && parts[1] != "" {
+				rewrittenUri += "/" + strings.TrimLeft(parts[1], "/")
+			} else if strings.HasSuffix(r.URL.Path, "/") {
+				rewrittenUri += "/"
+			}
+			if r.URL.RawQuery != "" {
+				rewrittenUri += "?" + r.URL.RawQuery
+			}
+
+			newUris, err := url.Parse(rewrittenUri)
+			if err != nil {
+				log.Printf("[%d] alias rewrite url parse err: %v", reqID, err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if !in(newUris.Scheme, prefixes) {
+				log.Printf("[%d] alias rewritten scheme invalid: %s", reqID, rewrittenUri)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+
+			log.Printf("[%d] alias route rewrite: %s -> %s", reqID, uri, rewrittenUri)
+			uri = rewrittenUri
+			uris = newUris
+		} else {
+			log.Printf("[%d] uri scheme invalid or alias not found: %s", reqID, uri)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
 	}
 
 	// 检查是否命中动态免缓存规则 (免缓存资源直接纯流式透传，严禁落盘)
