@@ -183,13 +183,97 @@ func getSafeUrlPath(rawUri string) string {
 	return filepath.Join(schemeHostDir, filepath.FromSlash(pDir), encodedFileName)
 }
 
+// MatchScope 检查请求 Host 与 Path 是否匹配规则作用域
+func (r *NoCacheRule) MatchScope(reqHost, reqPath string) bool {
+	if r.Scope == "" || r.Scope == "*" {
+		return true
+	}
+
+	scopeLower := strings.ToLower(r.Scope)
+	reqHostLower := strings.ToLower(reqHost)
+	reqPathLower := strings.ToLower(reqPath)
+
+	// 路径前缀作用域: 以 "/" 开头，例如 "/dists/"
+	if strings.HasPrefix(scopeLower, "/") {
+		return strings.Contains(reqPathLower, scopeLower)
+	}
+
+	// 域名或 域名+路径 复合作用域: 例如 "archive.ubuntu.com/dists/"
+	hostAndPath := reqHostLower + reqPathLower
+	if strings.Contains(scopeLower, "/") {
+		return strings.Contains(hostAndPath, scopeLower)
+	}
+
+	// 纯域名作用域: 例如 "archive.ubuntu.com"
+	return reqHostLower == scopeLower || strings.HasPrefix(reqHostLower, scopeLower+":")
+}
+
+// MatchPattern 检查 URL 路径及文件名是否符合匹配模式
+func (r *NoCacheRule) MatchPattern(urlPath, baseName string) bool {
+	baseLower := strings.ToLower(baseName)
+	patternLower := strings.ToLower(r.Pattern)
+
+	switch r.Type {
+	case "exact":
+		return baseLower == patternLower
+	case "prefix":
+		return strings.HasPrefix(baseLower, patternLower)
+	case "suffix":
+		return strings.HasSuffix(baseLower, patternLower)
+	case "regex":
+		if r.Regexp != nil {
+			return r.Regexp.MatchString(urlPath) || r.Regexp.MatchString(baseName)
+		}
+	}
+	return false
+}
+
+// shouldBypassCache 根据规则判定请求是否应当免除本地落盘缓存
+// 规则完全由配置文件驱动，无任何代码硬编码
+func shouldBypassCache(rawUri string, rules []NoCacheRule) bool {
+	if len(rules) == 0 {
+		return false
+	}
+	u, err := url.Parse(rawUri)
+	if err != nil {
+		return false
+	}
+	reqHost := u.Host
+	reqPath := u.Path
+	baseName := path.Base(reqPath)
+
+	var hasBypassMatch bool
+
+	for _, rule := range rules {
+		if !rule.MatchScope(reqHost, reqPath) {
+			continue
+		}
+		if !rule.MatchPattern(reqPath, baseName) {
+			continue
+		}
+
+		// 白名单规则绝对优先：若匹配到声明为 "cache" 的规则，立即判定为强制缓存落盘，绝不免缓存
+		if rule.Action == "cache" {
+			return false
+		}
+
+		if rule.Action == "bypass" {
+			hasBypassMatch = true
+		}
+	}
+
+	return hasBypassMatch
+}
+
 //Handler 请求处理程序
 func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 	reqID := atomic.AddUint64(&requestID, 1)
 
 	var forwards map[string]string
+	var nocacheRules []NoCacheRule
 	if config != nil {
 		forwards = config.Forwards
+		nocacheRules = config.NoCacheRules
 	}
 
 	// 处理 HTTPS CONNECT 隧道代理 (用于标准正向代理下的 HTTPS 透传)
@@ -263,6 +347,45 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 	if !in(uris.Scheme, prefixes) {
 		log.Printf("[%d] uri err: %s", reqID, uri)
 		w.WriteHeader(http.StatusRequestedRangeNotSatisfiable)
+		return
+	}
+
+	// 检查是否命中动态免缓存规则 (免缓存资源直接纯流式透传，严禁落盘)
+	if shouldBypassCache(uri, nocacheRules) {
+		log.Printf("[%d] cache bypass (dynamic resource): %s", reqID, uri)
+		targetUri := uri
+		if _, ok := forwards[uris.Host]; ok {
+			targetUri = forwards[uris.Host] + "/" + uri
+		}
+
+		req, err := http.NewRequestWithContext(r.Context(), "GET", targetUri, nil)
+		if err != nil {
+			log.Printf("[%d] req create err: %s", reqID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+
+		// 透传条件协商、Range与客户端特征头
+		bypassForwardHeaders := []string{"If-Modified-Since", "If-None-Match", "Range", "If-Range", "Cache-Control", "User-Agent"}
+		for _, h := range bypassForwardHeaders {
+			if val := r.Header.Get(h); val != "" {
+				req.Header.Set(h, val)
+			}
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			log.Printf("[%d] upstream bypass get err: %s", reqID, err)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		defer func() {
+			_ = resp.Body.Close()
+		}()
+
+		copyHeader(w.Header(), resp.Header)
+		w.WriteHeader(resp.StatusCode)
+		_, _ = io.Copy(w, resp.Body)
 		return
 	}
 
