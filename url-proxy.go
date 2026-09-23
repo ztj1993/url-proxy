@@ -238,7 +238,7 @@ func (r *NoCacheRule) MatchPattern(urlPath, baseName string) bool {
 
 // shouldBypassCache 根据规则判定请求是否应当免除本地落盘缓存
 // 规则完全由配置文件驱动，无任何代码硬编码
-func shouldBypassCache(rawUri string, rules []NoCacheRule) bool {
+func shouldBypassCache(rawUri string, rules []NoCacheRule, clientPaths ...string) bool {
 	if len(rules) == 0 {
 		return false
 	}
@@ -250,13 +250,23 @@ func shouldBypassCache(rawUri string, rules []NoCacheRule) bool {
 	reqPath := u.Path
 	baseName := path.Base(reqPath)
 
+	clientPath := ""
+	if len(clientPaths) > 0 {
+		clientPath = clientPaths[0]
+	}
+
 	var hasBypassMatch bool
 
 	for _, rule := range rules {
-		if !rule.MatchScope(reqHost, reqPath) {
+		// 同时检查上游 Host+Path 与客户端原始请求 Path (确保别名规则如 bypass /crates-index/ 与上游域名规则均能生效)
+		scopeMatched := rule.MatchScope(reqHost, reqPath)
+		if !scopeMatched && clientPath != "" {
+			scopeMatched = rule.MatchScope(reqHost, clientPath)
+		}
+		if !scopeMatched {
 			continue
 		}
-		if !rule.MatchPattern(reqPath, baseName) {
+		if !rule.MatchPattern(reqPath, baseName) && (clientPath == "" || !rule.MatchPattern(clientPath, path.Base(clientPath))) {
 			continue
 		}
 
@@ -397,7 +407,7 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 	hasRewriteMatch := rewriter != nil && rewriter.MightMatchRequest(r.URL.Path, uri)
 
 	// 检查是否命中动态免缓存规则或响应体重写规则 (免缓存与重写资源直接纯流式透传，严禁落盘)
-	if shouldBypassCache(uri, nocacheRules) || hasRewriteMatch {
+	if shouldBypassCache(uri, nocacheRules, r.URL.Path) || hasRewriteMatch {
 		if hasRewriteMatch {
 			log.Printf("[%d] dynamic body rewrite target: %s", reqID, uri)
 		} else {
