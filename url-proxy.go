@@ -1095,15 +1095,13 @@ func (rw *BodyRewriter) RuleMatchesResponse(r RewriteRule, reqPath, uri, content
 		cleanPath = cleanPath[:idx]
 	}
 
-	// 二进制保护：若响应为二进制 MIME，除非显式配置，否则直接拒绝
-	if isBinaryMimeType(ct) {
-		return false
-	}
-
 	spec := strings.ToLower(strings.TrimSpace(r.TypeSpec))
 
-	// 缺省或通配符：匹配所有安全文本 MIME 类型
+	// 缺省或通配符：匹配所有安全文本 MIME 类型 (未显式配置时严禁重写二进制 MIME)
 	if spec == "" || spec == "*" || spec == "all" {
+		if isBinaryMimeType(ct) {
+			return false
+		}
 		return isTextualMimeType(contentType)
 	}
 
@@ -1172,6 +1170,9 @@ func (rw *BodyRewriter) RuleMatchesResponse(r RewriteRule, reqPath, uri, content
 		return false
 	}
 
+	if isBinaryMimeType(ct) {
+		return false
+	}
 	return isTextualMimeType(contentType)
 }
 
