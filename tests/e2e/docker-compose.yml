@@ -1,0 +1,192 @@
+services:
+  url-proxy:
+    build:
+      context: ../..
+      dockerfile: tests/e2e/Dockerfile
+    image: url-proxy:local-test
+    container_name: url-proxy
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./proxy.conf:/etc/url-proxy/proxy.conf:ro
+    command: ["url-proxy", "-addr", ":8888", "-conf", "/etc/url-proxy/proxy.conf", "-cache", "/cache"]
+    healthcheck:
+      test: ["CMD", "nc", "-z", "127.0.0.1", "8888"]
+      interval: 2s
+      timeout: 3s
+      retries: 5
+      start_period: 1s
+    restart: unless-stopped
+    networks:
+      - proxy-net
+
+  # 1. APT - Prefix Mode (Package: tree)
+  client-apt-prefix:
+    image: docker.m.daocloud.io/library/ubuntu:24.04
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      bash -c "sed -i 's|http://archive.ubuntu.com/ubuntu|http://url-proxy:8888/ubuntu|g; s|http://security.ubuntu.com/ubuntu|http://url-proxy:8888/ubuntu-security|g' /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list 2>/dev/null || true;
+      apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 download -y tree"
+    networks:
+      - proxy-net
+
+  # 2. APT - Standard Forward Proxy Mode (Package: ed)
+  client-apt-proxy:
+    image: docker.m.daocloud.io/library/ubuntu:24.04
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      bash -c "echo 'Acquire::http::Proxy \"http://url-proxy:8888\";' > /etc/apt/apt.conf.d/01proxy;
+      apt-get -o Acquire::Retries=3 update && apt-get -o Acquire::Retries=3 download -y ed"
+    networks:
+      - proxy-net
+
+  # 3. Alpine - Prefix Mode (Package: tree)
+  client-alpine-prefix:
+    image: docker.m.daocloud.io/library/alpine:latest
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "echo 'http://url-proxy:8888/alpine/v3.20/main' > /etc/apk/repositories;
+      apk update && apk fetch tree"
+    networks:
+      - proxy-net
+
+  # 4. Alpine - Standard Forward Proxy Mode (Package: sed)
+  client-alpine-proxy:
+    image: docker.m.daocloud.io/library/alpine:latest
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    environment:
+      http_proxy: "http://url-proxy:8888"
+    command: >
+      sh -c "echo 'http://mirrors.aliyun.com/alpine/v3.20/main' > /etc/apk/repositories;
+      apk update && apk fetch sed"
+    networks:
+      - proxy-net
+
+  # 5. PyPI - Prefix Mode (Package: six)
+  client-pypi-prefix:
+    image: docker.m.daocloud.io/library/python:3.11-alpine
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      pip install --no-cache-dir --index-url http://url-proxy:8888/pypi/simple/ --trusted-host url-proxy six
+    networks:
+      - proxy-net
+
+  # 6. PyPI - Standard Forward Proxy Mode (Package: certifi)
+  client-pypi-proxy:
+    image: docker.m.daocloud.io/library/python:3.11-alpine
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      pip install --no-cache-dir --proxy http://url-proxy:8888 certifi
+    networks:
+      - proxy-net
+
+  # 7. npm - Prefix Mode (Package: is-sorted)
+  client-npm-prefix:
+    image: docker.m.daocloud.io/library/node:20-alpine
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "mkdir -p /tmp/app && cd /tmp/app && npm --registry http://url-proxy:8888/npm/ install is-sorted"
+    networks:
+      - proxy-net
+
+  # 8. npm - Standard Forward Proxy Mode (Package: is-number)
+  client-npm-proxy:
+    image: docker.m.daocloud.io/library/node:20-alpine
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "mkdir -p /tmp/app && cd /tmp/app && npm --proxy http://url-proxy:8888 install is-number"
+    networks:
+      - proxy-net
+
+  # 9. Go - GOPROXY Mode (Package: pkg/errors)
+  client-go-goproxy:
+    image: docker.m.daocloud.io/library/golang:1.22-alpine
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    environment:
+      GOPROXY: "http://url-proxy:8888/goproxy,direct"
+      GONOSUMDB: "*"
+    command: >
+      sh -c "mkdir -p /tmp/go && cd /tmp/go && go mod init test && (go mod download github.com/pkg/errors@v0.9.1 || (sleep 1 && go mod download github.com/pkg/errors@v0.9.1))"
+    networks:
+      - proxy-net
+
+  # 10. Go - Standard Forward Proxy Mode (Package: google/uuid)
+  client-go-proxy:
+    image: docker.m.daocloud.io/library/golang:1.22-alpine
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    environment:
+      http_proxy: "http://url-proxy:8888"
+      GOPROXY: "http://goproxy.cn,direct"
+      GONOSUMDB: "*"
+    command: >
+      sh -c "mkdir -p /tmp/go && cd /tmp/go && go mod init test && (go mod download github.com/google/uuid@v1.6.0 || (sleep 1 && go mod download github.com/google/uuid@v1.6.0))"
+    networks:
+      - proxy-net
+
+  # 11. Maven Central Repository Proxy (.jar package)
+  client-maven:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      curl -s -f -o /tmp/slf4j-api.jar http://url-proxy:8888/maven/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar
+    networks:
+      - proxy-net
+
+  # 12. Rust Cargo Crates Proxy (.crate package)
+  client-cargo:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -s -f http://url-proxy:8888/crates-index/config.json | grep -q 'crates-static' && curl -s -f -o /tmp/serde.crate http://url-proxy:8888/crates-static/crates/serde/serde-1.0.197.crate"
+    networks:
+      - proxy-net
+
+  # 13. HTTP Range 206 Partial Content
+  client-range:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -i -s -r 0-499 http://url-proxy:8888/ubuntu/dists/noble/InRelease | grep -i '206 Partial Content'"
+    networks:
+      - proxy-net
+
+  # 14. HTTP 304 Conditional Request (If-None-Match / ETag)
+  client-304:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -s -D /tmp/h -o /dev/null http://url-proxy:8888/ubuntu/dists/noble/InRelease && CODE=$$(curl -s -w '%{http_code}' -o /dev/null -z /tmp/h http://url-proxy:8888/ubuntu/dists/noble/InRelease) && [ \"$$CODE\" = '304' ]"
+    networks:
+      - proxy-net
+
+networks:
+  proxy-net:
+    driver: bridge
