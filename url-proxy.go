@@ -283,10 +283,53 @@ func shouldBypassCache(rawUri string, rules []NoCacheRule, clientPaths ...string
 	return hasBypassMatch
 }
 
+// RoutePlugin 路由作用域协议插件接口 (Feature 317)
+type RoutePlugin interface {
+	Name() string
+	Match(req *http.Request, uri string) bool
+	FastPathServe(w http.ResponseWriter, r *http.Request, uri string, cacheDir string) bool
+}
+
+// DockerPlugin Docker / OCI Registry v2 协议优化插件 (Feature 317)
+type DockerPlugin struct{}
+
+func (p *DockerPlugin) Name() string {
+	return "docker"
+}
+
+func (p *DockerPlugin) Match(req *http.Request, uri string) bool {
+	return strings.Contains(uri, "/blobs/sha256:")
+}
+
+func (p *DockerPlugin) FastPathServe(w http.ResponseWriter, r *http.Request, uri string, cacheDir string) bool {
+	if !p.Match(r, uri) {
+		return false
+	}
+	cachePath := filepath.Join(cacheDir, getSafeUrlPath(uri))
+	stat, err := os.Stat(cachePath)
+	if err != nil || stat.IsDir() || stat.Size() == 0 {
+		return false
+	}
+	w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
+	w.Header().Set("Accept-Ranges", "bytes")
+	w.Header().Set("Content-Type", "application/octet-stream")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return true
+	}
+	http.ServeFile(w, r, cachePath)
+	return true
+}
+
+var routePlugins = map[string]RoutePlugin{
+	"docker": &DockerPlugin{},
+}
+
 //Handler 请求处理程序
 func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 	reqID := atomic.AddUint64(&requestID, 1)
 
+	var activePluginName string
 	var aliases map[string]string
 	var forwards map[string]string
 	var nocacheRules []NoCacheRule
@@ -372,6 +415,9 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 		aliasKey := parts[0]
 
 		if targetBase, ok := aliases[aliasKey]; ok && aliasKey != "" {
+			if config != nil && config.AliasPlugins != nil {
+				activePluginName = config.AliasPlugins[aliasKey]
+			}
 			rewrittenUri := strings.TrimRight(targetBase, "/")
 			if len(parts) > 1 && parts[1] != "" {
 				rewrittenUri += "/" + strings.TrimLeft(parts[1], "/")
@@ -494,20 +540,13 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 		return
 	}
 
-	// 针对内容寻址的不可变分层 Blob (/blobs/sha256:)，若本地已有完整缓存，直接高速直出，免除上游回源
-	if strings.Contains(uri, "/blobs/sha256:") {
-		cachePath := filepath.Join(*cache, getSafeUrlPath(uri))
-		if stat, err := os.Stat(cachePath); err == nil && !stat.IsDir() && stat.Size() > 0 {
-			log.Printf("[%d] blob hit local cache (direct serve): %s", reqID, uri)
-			w.Header().Set("Content-Length", strconv.FormatInt(stat.Size(), 10))
-			w.Header().Set("Accept-Ranges", "bytes")
-			w.Header().Set("Content-Type", "application/octet-stream")
-			if r.Method == http.MethodHead {
-				w.WriteHeader(http.StatusOK)
+	// 若当前路由作用域绑定了协议插件，优先执行插件专属的高速直出 (Feature 317)
+	if activePluginName != "" {
+		if plugin, ok := routePlugins[activePluginName]; ok {
+			if plugin.FastPathServe(w, r, uri, *cache) {
+				log.Printf("[%d] [%s] plugin fast path direct serve: %s", reqID, plugin.Name(), uri)
 				return
 			}
-			http.ServeFile(w, r, cachePath)
-			return
 		}
 	}
 
@@ -1211,6 +1250,7 @@ func (rw *BodyRewriter) Apply(clientHost string, reqPath, uri, contentType strin
 // ProxyConfig 统一代理配置结构
 type ProxyConfig struct {
 	Aliases      map[string]string         // 短别名映射 (Feature 306): short_alias -> upstream_base_url
+	AliasPlugins map[string]string         // 别名绑定的路由插件 (Feature 317): short_alias -> plugin_name
 	Forwards     map[string]string         // 域名转发映射 (Feature 103): source_host -> gateway_base_url
 	NoCacheRules []NoCacheRule             // 免缓存与白名单例外规则 (Feature 305)
 	Types        map[string]TypeDefinition // 内容类型定义 (Feature 311): type_name -> TypeDefinition
@@ -1254,8 +1294,14 @@ func parseProxyConfig(r io.Reader) (*ProxyConfig, error) {
 			if len(fields) >= 3 {
 				name := strings.TrimPrefix(fields[1], "/")
 				cfg.Aliases[name] = fields[2]
+				for _, opt := range fields[3:] {
+					optLower := strings.ToLower(opt)
+					if strings.HasPrefix(optLower, "plugin:") {
+						cfg.AliasPlugins[name] = strings.TrimPrefix(optLower, "plugin:")
+					}
+				}
 			} else {
-				log.Printf("invalid alias directive (expected 'alias <name> <upstream_url>'): %s", line)
+				log.Printf("invalid alias directive (expected 'alias <name> <upstream_url> [plugin:<name>]'): %s", line)
 			}
 		case "forward":
 			if len(fields) >= 3 {
