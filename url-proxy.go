@@ -238,13 +238,13 @@ func (r *NoCacheRule) MatchPattern(urlPath, baseName string) bool {
 
 // shouldBypassCache 根据规则判定请求是否应当免除本地落盘缓存
 // 规则完全由配置文件驱动，无任何代码硬编码
-func shouldBypassCache(rawUri string, rules []NoCacheRule, clientPaths ...string) bool {
+func matchBypassRule(rawUri string, rules []NoCacheRule, clientPaths ...string) *NoCacheRule {
 	if len(rules) == 0 {
-		return false
+		return nil
 	}
 	u, err := url.Parse(rawUri)
 	if err != nil {
-		return false
+		return nil
 	}
 	reqHost := u.Host
 	reqPath := u.Path
@@ -255,10 +255,10 @@ func shouldBypassCache(rawUri string, rules []NoCacheRule, clientPaths ...string
 		clientPath = clientPaths[0]
 	}
 
-	var hasBypassMatch bool
+	var matchedBypass *NoCacheRule
 
-	for _, rule := range rules {
-		// 同时检查上游 Host+Path 与客户端原始请求 Path (确保别名规则如 bypass /crates-index/ 与上游域名规则均能生效)
+	for i := range rules {
+		rule := &rules[i]
 		scopeMatched := rule.MatchScope(reqHost, reqPath)
 		if !scopeMatched && clientPath != "" {
 			scopeMatched = rule.MatchScope(reqHost, clientPath)
@@ -272,16 +272,85 @@ func shouldBypassCache(rawUri string, rules []NoCacheRule, clientPaths ...string
 
 		// 白名单规则绝对优先：若匹配到声明为 "cache" 的规则，立即判定为强制缓存落盘，绝不免缓存
 		if rule.Action == "cache" {
-			return false
+			return nil
 		}
 
 		if rule.Action == "bypass" {
-			hasBypassMatch = true
+			matchedBypass = rule
 		}
 	}
 
-	return hasBypassMatch
+	return matchedBypass
 }
+
+func shouldBypassCache(rawUri string, rules []NoCacheRule, clientPaths ...string) bool {
+	return matchBypassRule(rawUri, rules, clientPaths...) != nil
+}
+
+// TTLItem 保存带有生命周期元数据的缓存项 (Feature 318)
+type TTLItem struct {
+	Data         []byte
+	Header       http.Header
+	StatusCode   int
+	ETag         string
+	LastModified string
+	CachedAt     time.Time
+	ExpiresAt    time.Time
+}
+
+// TTLManager 管理内存/临时存储的高并发元数据软缓存生命周期 (Feature 318)
+type TTLManager struct {
+	mu    sync.RWMutex
+	items map[string]*TTLItem
+}
+
+func NewTTLManager() *TTLManager {
+	return &TTLManager{
+		items: make(map[string]*TTLItem),
+	}
+}
+
+func (m *TTLManager) Get(key string) (*TTLItem, bool) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	item, found := m.items[key]
+	if !found {
+		return nil, false
+	}
+	if time.Now().After(item.ExpiresAt) {
+		return item, false
+	}
+	return item, true
+}
+
+func (m *TTLManager) Set(key string, data []byte, header http.Header, statusCode int, duration time.Duration) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := time.Now()
+	h := make(http.Header)
+	copyHeader(h, header)
+	m.items[key] = &TTLItem{
+		Data:         data,
+		Header:       h,
+		StatusCode:   statusCode,
+		ETag:         header.Get("ETag"),
+		LastModified: header.Get("Last-Modified"),
+		CachedAt:     now,
+		ExpiresAt:    now.Add(duration),
+	}
+}
+
+func (m *TTLManager) Refresh(key string, duration time.Duration) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if item, found := m.items[key]; found {
+		item.ExpiresAt = time.Now().Add(duration)
+		return true
+	}
+	return false
+}
+
+var globalTTLManager = NewTTLManager()
 
 // RoutePlugin 路由作用域协议插件接口 (Feature 317)
 type RoutePlugin interface {
@@ -451,14 +520,118 @@ func Handler(w http.ResponseWriter, r *http.Request, config *ProxyConfig) {
 	}
 
 	hasRewriteMatch := rewriter != nil && rewriter.MightMatchRequest(r.URL.Path, uri)
+	matchedBypass := matchBypassRule(uri, nocacheRules, r.URL.Path)
 
 	// 检查是否命中动态免缓存规则或响应体重写规则 (免缓存与重写资源直接纯流式透传，严禁落盘)
-	if shouldBypassCache(uri, nocacheRules, r.URL.Path) || hasRewriteMatch {
+	if matchedBypass != nil || hasRewriteMatch {
 		if hasRewriteMatch {
 			log.Printf("[%d] dynamic body rewrite target: %s", reqID, uri)
+		} else if matchedBypass.TTL > 0 {
+			log.Printf("[%d] cache bypass with soft ttl (%v): %s", reqID, matchedBypass.TTL, uri)
 		} else {
 			log.Printf("[%d] cache bypass (dynamic resource): %s", reqID, uri)
 		}
+
+		// Feature 318: 软过期与 SWR 缓存调度
+		if matchedBypass != nil && matchedBypass.TTL > 0 && !hasRewriteMatch && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+			cachedItem, fresh := globalTTLManager.Get(uri)
+			if fresh && cachedItem != nil {
+				copyHeader(w.Header(), cachedItem.Header)
+				w.Header().Set("X-Cache-Status", "HIT-SOFT-TTL")
+				w.WriteHeader(cachedItem.StatusCode)
+				if r.Method != http.MethodHead {
+					_, _ = w.Write(cachedItem.Data)
+				}
+				log.Printf("[%d] soft ttl hit (%s remaining): %s", reqID, time.Until(cachedItem.ExpiresAt).Round(time.Millisecond), uri)
+				return
+			}
+
+			targetUri := uri
+			if _, ok := forwards[uris.Host]; ok {
+				targetUri = forwards[uris.Host] + "/" + uri
+			}
+
+			req, err := http.NewRequestWithContext(r.Context(), r.Method, targetUri, nil)
+			if err != nil {
+				log.Printf("[%d] soft ttl req create err: %v", reqID, err)
+				w.WriteHeader(http.StatusInternalServerError)
+				return
+			}
+
+			for k, vv := range r.Header {
+				for _, v := range vv {
+					req.Header.Add(k, v)
+				}
+			}
+
+			// 若存在陈旧缓存且有 ETag / Last-Modified，向上游注入条件请求头 (SWR 机制)
+			if cachedItem != nil {
+				if cachedItem.ETag != "" && req.Header.Get("If-None-Match") == "" {
+					req.Header.Set("If-None-Match", cachedItem.ETag)
+				}
+				if cachedItem.LastModified != "" && req.Header.Get("If-Modified-Since") == "" {
+					req.Header.Set("If-Modified-Since", cachedItem.LastModified)
+				}
+			}
+
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				log.Printf("[%d] soft ttl upstream fetch err: %v", reqID, err)
+				if cachedItem != nil {
+					copyHeader(w.Header(), cachedItem.Header)
+					w.Header().Set("X-Cache-Status", "STALE-FALLBACK")
+					w.WriteHeader(cachedItem.StatusCode)
+					if r.Method != http.MethodHead {
+						_, _ = w.Write(cachedItem.Data)
+					}
+					return
+				}
+				w.WriteHeader(http.StatusBadGateway)
+				return
+			}
+			defer resp.Body.Close()
+
+			// 上游返回 304 Not Modified: 静默续期租期并返回缓存内容
+			if resp.StatusCode == http.StatusNotModified && cachedItem != nil {
+				globalTTLManager.Refresh(uri, matchedBypass.TTL)
+				copyHeader(w.Header(), cachedItem.Header)
+				w.Header().Set("X-Cache-Status", "REVALIDATED-304")
+
+				if r.Header.Get("If-None-Match") == cachedItem.ETag || (r.Header.Get("If-Modified-Since") != "" && r.Header.Get("If-Modified-Since") == cachedItem.LastModified) {
+					w.WriteHeader(http.StatusNotModified)
+					return
+				}
+				w.WriteHeader(cachedItem.StatusCode)
+				if r.Method != http.MethodHead {
+					_, _ = w.Write(cachedItem.Data)
+				}
+				log.Printf("[%d] soft ttl 304 revalidated (lease extended %v): %s", reqID, matchedBypass.TTL, uri)
+				return
+			}
+
+			// 上游返回 200 OK: 接收新内容并存入 TTLManager
+			if resp.StatusCode == http.StatusOK {
+				bodyBytes, err := io.ReadAll(resp.Body)
+				if err == nil {
+					globalTTLManager.Set(uri, bodyBytes, resp.Header, resp.StatusCode, matchedBypass.TTL)
+					copyHeader(w.Header(), resp.Header)
+					w.Header().Set("X-Cache-Status", "MISS-SOFT-TTL")
+					w.WriteHeader(resp.StatusCode)
+					if r.Method != http.MethodHead {
+						_, _ = w.Write(bodyBytes)
+					}
+					log.Printf("[%d] soft ttl cached 200 (ttl=%v): %s", reqID, matchedBypass.TTL, uri)
+					return
+				}
+			}
+
+			// 其他状态码透传
+			copyHeader(w.Header(), resp.Header)
+			w.WriteHeader(resp.StatusCode)
+			_, _ = io.Copy(w, resp.Body)
+			return
+		}
+
 		targetUri := uri
 		if _, ok := forwards[uris.Host]; ok {
 			targetUri = forwards[uris.Host] + "/" + uri
@@ -879,6 +1052,7 @@ type NoCacheRule struct {
 	Type    string         // 匹配类型: "exact", "prefix", "suffix", "regex"
 	Pattern string         // 匹配模式串
 	Regexp  *regexp.Regexp // 当 Type 为 "regex" 时的预编译正则表达式
+	TTL     time.Duration  // 软过期保鲜时长 (Feature 318, 若为 0 则为纯流式直通)
 }
 
 // TypeDefinition 内容类型定义 (Feature 311)
@@ -1310,12 +1484,29 @@ func parseProxyConfig(r io.Reader) (*ProxyConfig, error) {
 				log.Printf("invalid forward directive (expected 'forward <host> <gateway_url>'): %s", line)
 			}
 		case "bypass", "nocache":
-			if len(fields) >= 4 {
+			var ttl time.Duration
+			cleanFields := make([]string, 0, len(fields))
+			for _, f := range fields {
+				fLower := strings.ToLower(f)
+				if strings.HasPrefix(fLower, "ttl:") {
+					durStr := strings.TrimPrefix(fLower, "ttl:")
+					if d, err := time.ParseDuration(durStr); err == nil {
+						ttl = d
+					} else {
+						log.Printf("invalid ttl duration in bypass rule: %s: %v", f, err)
+					}
+				} else {
+					cleanFields = append(cleanFields, f)
+				}
+			}
+
+			if len(cleanFields) >= 4 {
 				rule := NoCacheRule{
-					Scope:   fields[1],
+					Scope:   cleanFields[1],
 					Action:  "bypass",
-					Type:    strings.ToLower(fields[2]),
-					Pattern: strings.Join(fields[3:], " "),
+					Type:    strings.ToLower(cleanFields[2]),
+					Pattern: strings.Join(cleanFields[3:], " "),
+					TTL:     ttl,
 				}
 				if rule.Type == "regex" {
 					re, err := regexp.Compile(rule.Pattern)
@@ -1326,12 +1517,22 @@ func parseProxyConfig(r io.Reader) (*ProxyConfig, error) {
 					rule.Regexp = re
 				}
 				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
-			} else if len(fields) == 3 && fields[2] == "*" {
+			} else if len(cleanFields) == 3 && cleanFields[2] == "*" {
 				rule := NoCacheRule{
-					Scope:   fields[1],
+					Scope:   cleanFields[1],
 					Action:  "bypass",
 					Type:    "*",
 					Pattern: "*",
+					TTL:     ttl,
+				}
+				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
+			} else if len(cleanFields) == 2 {
+				rule := NoCacheRule{
+					Scope:   cleanFields[1],
+					Action:  "bypass",
+					Type:    "*",
+					Pattern: "*",
+					TTL:     ttl,
 				}
 				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
 			} else {
