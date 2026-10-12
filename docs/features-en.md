@@ -50,3 +50,9 @@
   - `.crate` package persistent caching
 - **Go / Maven**
   - Path alias mode
+## Architecture & Engineering Layering
+
+- **Codebase Modular Decoupling & Domain Layering Refactoring (Feature 321)**
+  - Decouple monolithic core logic into 7 cohesive `internal` domain packages
+  - Object-oriented encapsulation eliminating package-level mutable global state
+  - Backward-compatible lightweight root entrypoint with native Go unit testing

@@ -4,9 +4,10 @@ LABEL maintainer="Ztj <ztj1993@gmail.com>"
 
 COPY ./url-proxy.go /srv/url-proxy.go
 COPY ./go.mod /srv/go.mod
+COPY ./internal /srv/internal
 
 RUN cd /srv \
-  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o uproxy_linux_amd64 \
+  && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o uproxy_linux_amd64 . \
   && chmod +x ./uproxy_linux_amd64
 
 
