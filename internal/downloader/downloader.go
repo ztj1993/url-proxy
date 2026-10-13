@@ -46,9 +46,7 @@ func (job *DownloadJob) TryRename(reqID uint64) {
 		return
 	}
 
-	// 如果已经重命名成功，或者临时文件不存在，则直接返回
-	if _, err := os.Stat(job.FinalName); err == nil {
-		log.Printf("[%d] rename skipped: final file already exists %s", reqID, job.FinalName)
+	if job.TmpName == "" {
 		return
 	}
 	if _, err := os.Stat(job.TmpName); os.IsNotExist(err) {
@@ -67,6 +65,7 @@ func (job *DownloadJob) TryRename(reqID uint64) {
 		}
 
 		log.Printf("[%d] attempting rename: %s -> %s", reqID, job.TmpName, job.FinalName)
+		_ = os.Remove(job.FinalName)
 		err := os.Rename(job.TmpName, job.FinalName)
 		if err == nil {
 			job.FilePath = job.FinalName

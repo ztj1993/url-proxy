@@ -191,6 +191,12 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	hasRewriteMatch := s.rewriter != nil && s.rewriter.MightMatchRequest(r.URL.Path, uri)
 	matchedBypass := cache.MatchBypassRule(uri, nocacheRules, r.URL.Path)
 
+	// Feature 332: 检查是否匹配带 TTL 的磁盘时效缓存规则
+	if matchedBypass != nil && matchedBypass.TTL > 0 && !hasRewriteMatch && (r.Method == http.MethodGet || r.Method == http.MethodHead) {
+		s.handleDiskTTL(w, r, reqID, uris, uri, forwards, matchedBypass)
+		return
+	}
+
 	// 4. 检查是否命中动态免缓存规则或响应体重写规则 (免缓存与重写资源直接纯流式透传，严禁落盘)
 	if matchedBypass != nil || hasRewriteMatch {
 		s.handleBypass(w, r, reqID, uris, uri, forwards, matchedBypass, hasRewriteMatch)
