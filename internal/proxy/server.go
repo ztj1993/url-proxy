@@ -21,14 +21,33 @@ import (
 
 // Server 统一代理协议服务器
 type Server struct {
-	cfg       *config.ProxyConfig
-	cacheDir  string
-	downMgr   *downloader.Manager
-	ttlMgr    *ttl.TTLManager
-	rewriter  *rewriter.BodyRewriter
-	plugins   *plugin.Registry
-	addr      string
-	requestID uint64
+	cfg        *config.ProxyConfig
+	cacheDir   string
+	downMgr    *downloader.Manager
+	ttlMgr     *ttl.TTLManager
+	rewriter   *rewriter.BodyRewriter
+	plugins    *plugin.Registry
+	addr       string
+	requestID  uint64
+	httpClient *http.Client
+}
+
+// NewUpstreamTransport 创建针对高并发镜像代理优化的 HTTP Transport (Feature 334)
+func NewUpstreamTransport() *http.Transport {
+	return &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   10 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     true,
+		MaxIdleConns:          1000,
+		MaxIdleConnsPerHost:   100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 30 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 }
 
 // NewServer 初始化代理服务器实体
@@ -42,14 +61,32 @@ func NewServer(
 	addr string,
 ) *Server {
 	return &Server{
-		cfg:      cfg,
-		cacheDir: cacheDir,
-		downMgr:  downMgr,
-		ttlMgr:   ttlMgr,
-		rewriter: rw,
-		plugins:  plugins,
-		addr:     addr,
+		cfg:        cfg,
+		cacheDir:   cacheDir,
+		downMgr:    downMgr,
+		ttlMgr:     ttlMgr,
+		rewriter:   rw,
+		plugins:    plugins,
+		addr:       addr,
+		httpClient: &http.Client{Transport: NewUpstreamTransport()},
 	}
+}
+
+// SetHTTPClient 设置出向 HTTP 客户端（主要用于测试中调整超时参数）
+func (s *Server) SetHTTPClient(client *http.Client) {
+	s.httpClient = client
+}
+
+// HTTPClient 获取出向 HTTP 客户端
+func (s *Server) HTTPClient() *http.Client {
+	if s.httpClient != nil {
+		return s.httpClient
+	}
+	return http.DefaultClient
+}
+
+func (s *Server) doRequest(req *http.Request) (*http.Response, error) {
+	return s.HTTPClient().Do(req)
 }
 
 func copyHeader(dst http.Header, src http.Header) {

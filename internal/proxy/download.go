@@ -65,7 +65,7 @@ func (s *Server) handleDownload(
 				}
 			}
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := s.doRequest(req)
 			if err != nil {
 				log.Printf("[%d] get err: %s", reqID, err)
 				job.Err = err
@@ -202,6 +202,9 @@ func (s *Server) handleDownload(
 	atomic.AddInt32(&job.Readers, 1)
 
 	file, err := os.Open(job.FilePath)
+	if err != nil && job.FinalName != "" {
+		file, err = os.Open(job.FinalName)
+	}
 	if err != nil {
 		log.Printf("[%d] file open err: %s", reqID, err)
 		atomic.AddInt32(&job.Readers, -1)

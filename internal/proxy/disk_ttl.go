@@ -103,7 +103,7 @@ func (s *Server) handleDiskTTL(
 				req.Header.Set("If-Modified-Since", stat.ModTime().UTC().Format(http.TimeFormat))
 			}
 
-			resp, err := http.DefaultClient.Do(req)
+			resp, err := s.doRequest(req)
 			if err != nil {
 				log.Printf("[%d] disk ttl upstream do err: %v", reqID, err)
 				if fileExists {
@@ -266,6 +266,9 @@ func (s *Server) handleDiskTTL(
 	atomic.AddInt32(&job.Readers, 1)
 
 	file, err := os.Open(job.FilePath)
+	if err != nil && job.FinalName != "" {
+		file, err = os.Open(job.FinalName)
+	}
 	if err != nil {
 		log.Printf("[%d] disk ttl file open err: %v", reqID, err)
 		atomic.AddInt32(&job.Readers, -1)

@@ -49,7 +49,7 @@ func (s *Server) handleHead(
 		}
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.doRequest(req)
 	if err != nil {
 		log.Printf("[%d] upstream head err: %s", reqID, err)
 		w.WriteHeader(http.StatusInternalServerError)
@@ -98,7 +98,7 @@ func (s *Server) handleRange(
 		}
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.doRequest(req)
 	if err != nil {
 		log.Printf("[%d] upstream range get err: %s", reqID, err)
 		w.WriteHeader(http.StatusInternalServerError)

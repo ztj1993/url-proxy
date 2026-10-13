@@ -71,7 +71,7 @@ func (s *Server) handleBypass(
 			}
 		}
 
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := s.doRequest(req)
 		if err != nil {
 			log.Printf("[%d] soft ttl upstream fetch err: %v", reqID, err)
 			if cachedItem != nil {
@@ -149,7 +149,7 @@ func (s *Server) handleBypass(
 		req.Header.Set("Accept-Encoding", "identity")
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := s.doRequest(req)
 	if err != nil {
 		log.Printf("[%d] upstream bypass get err: %s", reqID, err)
 		w.WriteHeader(http.StatusInternalServerError)
