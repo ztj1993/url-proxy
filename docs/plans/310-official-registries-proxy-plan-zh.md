@@ -25,7 +25,7 @@
 2. **多域名协同与虚拟主机网关（Multi-Host Gateway Routing）**：建立主索引域名与分发 CDN 域名的协同映射，实现同一应用生态在代理内的闭环流转与统一落盘；
 3. **协议深度适配（Docker v2 & Cargo Sparse）**：原生中继 Docker 401 Bearer Token 质询挑战与 Cargo 稀疏索引，打通主流语言与容器生态；
 4. **扩展 `proxy.conf` 语法**：以最简优雅的配置语法（如 `rewrite`、`type`）纳管官方源代理行为，杜绝在核心代码中针对具体语言做硬编码。
-*(注：原「动态元数据软过期与 SWR 缓存机制」已作为后续可选优化移入 [docs/todo/metadata-soft-ttl-swr-zh.md](../todo/metadata-soft-ttl-swr-zh.md))。*
+*(注：原「动态元数据软过期与 SWR 缓存机制」已作为后续可选优化移入 待办优化规划)。*
 
 ---
 
@@ -59,13 +59,13 @@ graph TD
 
 | 特性编号 | 特性名称 | 核心目标与范围 | 详细规格文档 | 交付状态 |
 | :---: | :--- | :--- | :--- | :---: |
-| **Feature 311** | **响应体流式动态重写引擎** | 提供通用文本响应体重写底座；支持 `rewrite` 指令与 `{PROXY_HOST}` 变量插值；处理 ETag 剥离与 Chunked 传输 | [311 设计文档](../features/311-response-body-rewriter-zh.md) | ✅ **已完成** |
-| **Feature 312** | **PyPI 官方镜像源全链路闭环代理** | 打通 `pypi.org` 与 `files.pythonhosted.org` 协同路由；动态改写 Simple 索引中 wheel/sdist 绝对链接；`.whl` 强缓存 | [312 设计文档](../features/312-pypi-official-proxy-zh.md) | ✅ **已完成** |
-| **Feature 313** | **npm 官方镜像源全链路闭环代理** | 动态重写 package 元数据 JSON 中的 `dist.tarball` 绝对路径；`.tgz` 强缓存与并发合并；客户端 `npmrc` 适配 | [313 设计文档](../features/313-npm-official-proxy-zh.md) | ✅ **已完成** |
-| **Feature 314** | **Docker/OCI 镜像 Registry v2 协议中继** | 拦截 `/v2/` 并中继 Bearer Token 握手挑战；Layer Blob 强缓存与 Range 续传；Manifest 动态 304 直通 | [314 设计文档](../features/314-docker-registry-v2-relay-zh.md) | ✅ **已完成** |
-| **Feature 315** | **Rust Cargo 稀疏索引与 Crates 官方源代理** | 适配 Cargo Sparse Index（RFC 2785）HTTP 端点；静态 `.crate` 压缩包持久化落盘 | [315 设计文档](../features/315-rust-cargo-crates-proxy-zh.md) | ✅ **已完成** |
-| **Feature 316** | **多生态全链路端到端集成测试与预置模板** | 构建高仿真 Mock 测试集群；全生态自动化回归测试；发布生产级全生态标准配置 `proxy.conf` | [316 设计文档](../features/316-multi-ecosystem-integration-zh.md) | ✅ **已完成** |
-| *(待办规划)* | 动态元数据软过期与 SWR 缓存机制 | 支持 `ttl` 指令；实现元数据本地短期保鲜与基于 304 条件协商的后台 SWR 刷新 | [待办设计文档](../todo/metadata-soft-ttl-swr-zh.md) | 待排期 |
+| **Feature 311** | **响应体流式动态重写引擎** | 提供通用文本响应体重写底座；支持 `rewrite` 指令与 `{PROXY_HOST}` 变量插值；处理 ETag 剥离与 Chunked 传输 | Feature 311 规范 | ✅ **已完成** |
+| **Feature 312** | **PyPI 官方镜像源全链路闭环代理** | 打通 `pypi.org` 与 `files.pythonhosted.org` 协同路由；动态改写 Simple 索引中 wheel/sdist 绝对链接；`.whl` 强缓存 | Feature 312 规范 | ✅ **已完成** |
+| **Feature 313** | **npm 官方镜像源全链路闭环代理** | 动态重写 package 元数据 JSON 中的 `dist.tarball` 绝对路径；`.tgz` 强缓存与并发合并；客户端 `npmrc` 适配 | Feature 313 规范 | ✅ **已完成** |
+| **Feature 314** | **Docker/OCI 镜像 Registry v2 协议中继** | 拦截 `/v2/` 并中继 Bearer Token 握手挑战；Layer Blob 强缓存与 Range 续传；Manifest 动态 304 直通 | Feature 314 规范 | ✅ **已完成** |
+| **Feature 315** | **Rust Cargo 稀疏索引与 Crates 官方源代理** | 适配 Cargo Sparse Index（RFC 2785）HTTP 端点；静态 `.crate` 压缩包持久化落盘 | Feature 315 规范 | ✅ **已完成** |
+| **Feature 316** | **多生态全链路端到端集成测试与预置模板** | 构建高仿真 Mock 测试集群；全生态自动化回归测试；发布生产级全生态标准配置 `proxy.conf` | Feature 316 规范 | ✅ **已完成** |
+| *(待办规划)* | 动态元数据软过期与 SWR 缓存机制 | 支持 `ttl` 指令；实现元数据本地短期保鲜与基于 304 条件协商的后台 SWR 刷新 | 待办设计规划 | 待排期 |
 
 ---
 

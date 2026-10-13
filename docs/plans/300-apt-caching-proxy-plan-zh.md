@@ -163,13 +163,13 @@
 
 | 模块编号 | 功能模块名称 | 核心能力与技术亮点 | 交付产物与验证规范 | 关联 Git 提交信息与哈希 |
 | :---: | :--- | :--- | :--- | :--- |
-| **301** | **标准 HTTP 正向代理协议支持** | 支持正向代理绝对请求行识别与 HTTPS CONNECT 隧道，支持 `Acquire::http::Proxy` 零侵入接入。 | • `docs/features/301-standard-forward-proxy-{zh,en}.md`<br>• `tests/301_forward_proxy/` 自动化冒烟测试全通 | `ce31ce5` `feat(proxy): support standard HTTP forward proxy protocol (301)` |
-| **302** | **条件请求与 304 快速协商透传** | 透传 `If-Modified-Since` 与 `If-None-Match (ETag)`，上游返回 304 时直接短路回传，实现日常 update 极速完成且零多余流量。 | • `docs/features/302-conditional-304-{zh,en}.md`<br>• `tests/302_conditional_304/` 304 短路透传验证 | `a9ad53e` `feat(proxy): support conditional requests and 304 fast passthrough (302)` |
-| **303** | **Range 请求与 206 断点续传支持** | 透传 `Range` 请求头及 `206 Partial Content`，本地有缓存时直出分片，本地无缓存时纯流式透传不落盘。 | • `docs/features/303-range-requests-{zh,en}.md`<br>• `tests/303_range_requests/` 206 分块切片测试 | `31613ba` `feat(proxy): support Range requests and 206 Partial Content resuming (303)` |
-| **304** | **统一代理配置文件系统** | 引入单一真理源 `proxy.conf`，确立单行指令规范（`alias`, `forward`, `bypass`, `cache`），提供 `-conf` 参数及多级自动探测。 | • `docs/features/304-unified-configuration-{zh,en}.md`<br>• `tests/304_unified_config/` CLI 与探测测试 | `9bd2a94` `feat: implement unified proxy configuration system (Feature 304)` |
-| **305** | **可配置免缓存规则与防误杀机制** | 彻底去代码硬编码；实现基于上下文作用域（`/dists/`）的动态元数据纯流式直通（Zero Disk I/O）与白名单绝对优先防误杀仲裁。 | • `docs/features/305-selective-cache-bypass-{zh,en}.md`<br>• `tests/305_selective_cache/` 动静分离与防误杀测试 | `7449ed3` `feat(cache): implement configurable cache bypass rules and anti-false-positive engine (305)` |
-| **306** | **路径短别名路由与动态重写** | 提取第一级路径短别名，动态重写为上游 BaseURL；实现私有镜像站接入体验，并与安全缓存路径联动共享同一磁盘缓存。 | • `docs/features/306-path-alias-routing-{zh,en}.md`<br>• `tests/306_path_alias/` 短别名重写与全管线联动测试 | `bcb63e6` `feat(routing): support path-based short alias routing and dynamic URL rewriting (306)` |
-| **307** | **APT 代理全链路端到端集成验证** | 汇总 301~306 全部能力，构建高仿真 APT 仓库服务器与全生命周期自动化集成测试套件，量化审计上游流量。 | • `docs/features/307-apt-integration-{zh,en}.md`<br>• `tests/307_apt_integration/` 全链路端到端集成测试 | `314ed48` `test(apt): add end-to-end integration test suite and profile templates for APT (307)` |
+| **301** | **标准 HTTP 正向代理协议支持** | 支持正向代理绝对请求行识别与 HTTPS CONNECT 隧道，支持 `Acquire::http::Proxy` 零侵入接入。 | • Feature 301 规格规范<br>• `tests/301_forward_proxy/` 自动化冒烟测试全通 | `ce31ce5` `feat(proxy): support standard HTTP forward proxy protocol (301)` |
+| **302** | **条件请求与 304 快速协商透传** | 透传 `If-Modified-Since` 与 `If-None-Match (ETag)`，上游返回 304 时直接短路回传，实现日常 update 极速完成且零多余流量。 | • Feature 302 规格规范<br>• `tests/302_conditional_304/` 304 短路透传验证 | `a9ad53e` `feat(proxy): support conditional requests and 304 fast passthrough (302)` |
+| **303** | **Range 请求与 206 断点续传支持** | 透传 `Range` 请求头及 `206 Partial Content`，本地有缓存时直出分片，本地无缓存时纯流式透传不落盘。 | • Feature 303 规格规范<br>• `tests/303_range_requests/` 206 分块切片测试 | `31613ba` `feat(proxy): support Range requests and 206 Partial Content resuming (303)` |
+| **304** | **统一代理配置文件系统** | 引入单一真理源 `proxy.conf`，确立单行指令规范（`alias`, `forward`, `bypass`, `cache`），提供 `-conf` 参数及多级自动探测。 | • Feature 304 规格规范<br>• `tests/304_unified_config/` CLI 与探测测试 | `9bd2a94` `feat: implement unified proxy configuration system (Feature 304)` |
+| **305** | **可配置免缓存规则与防误杀机制** | 彻底去代码硬编码；实现基于上下文作用域（`/dists/`）的动态元数据纯流式直通（Zero Disk I/O）与白名单绝对优先防误杀仲裁。 | • Feature 305 规格规范<br>• `tests/305_selective_cache/` 动静分离与防误杀测试 | `7449ed3` `feat(cache): implement configurable cache bypass rules and anti-false-positive engine (305)` |
+| **306** | **路径短别名路由与动态重写** | 提取第一级路径短别名，动态重写为上游 BaseURL；实现私有镜像站接入体验，并与安全缓存路径联动共享同一磁盘缓存。 | • Feature 306 规格规范<br>• `tests/306_path_alias/` 短别名重写与全管线联动测试 | `bcb63e6` `feat(routing): support path-based short alias routing and dynamic URL rewriting (306)` |
+| **307** | **APT 代理全链路端到端集成验证** | 汇总 301~306 全部能力，构建高仿真 APT 仓库服务器与全生命周期自动化集成测试套件，量化审计上游流量。 | • Feature 307 规格规范<br>• `tests/307_apt_integration/` 全链路端到端集成测试 | `314ed48` `test(apt): add end-to-end integration test suite and profile templates for APT (307)` |
 
 ---
 

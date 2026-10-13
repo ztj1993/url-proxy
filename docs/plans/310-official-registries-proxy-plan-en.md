@@ -25,7 +25,7 @@ Extend `url-proxy` while preserving its lightweight, decoupled architecture to o
 2. **Multi-Host Gateway Routing**: Coordinated mapping between primary index domains and storage CDN domains, ensuring seamless routing and unified local persistence;
 3. **Protocol Adaptations (Docker v2 & Cargo Sparse)**: Transparent relay of Docker 401 Bearer Token challenges and Cargo Sparse Index HTTP requests, connecting major container and language registries;
 4. **Extended `proxy.conf` Directives**: Clean, declarative directives (`rewrite`, `type`) to govern official registry behavior without hardcoding language-specific logic in the core proxy engine.
-*(Note: The original "Metadata Soft TTL & SWR" feature has been moved to [docs/todo/metadata-soft-ttl-swr-en.md](../todo/metadata-soft-ttl-swr-en.md) as a future optimization).*
+*(Note: The original "Metadata Soft TTL & SWR" feature has been moved to future optimization as a future optimization).*
 
 ---
 
@@ -59,13 +59,13 @@ graph TD
 
 | Feature | Name | Scope & Objective | Specification | Status |
 | :---: | :--- | :--- | :--- | :---: |
-| **Feature 311** | **Streaming Response Body Rewriter Engine** | Generic response body rewriter foundation; `rewrite` directive with `{PROXY_HOST}`; ETag stripping & chunked encoding | [311 Specification](../features/311-response-body-rewriter-en.md) | ✅ **Completed** |
-| **Feature 312** | **Official PyPI Gateway & Multi-Host Routing** | Coordinated routing for `pypi.org` & `files.pythonhosted.org`; PEP 503/691 index rewriting; `.whl` caching | [312 Specification](../features/312-pypi-official-proxy-en.md) | ✅ **Completed** |
-| **Feature 313** | **Official npm Registry Gateway & Tarball Rewriter** | Rewrite `dist.tarball` absolute URLs in package JSON; `.tgz` caching and request coalescing; client `.npmrc` integration | [313 Specification](../features/313-npm-official-proxy-en.md) | ✅ **Completed** |
-| **Feature 314** | **Docker / OCI Registry v2 Relay & Layer Caching** | Intercept `/v2/` & relay Bearer Token challenge; immutable layer blob caching with Range 206 support; dynamic manifest 304 passthrough | [314 Specification](../features/314-docker-registry-v2-relay-en.md) | ✅ **Completed** |
-| **Feature 315** | **Rust Cargo Sparse Index & Crates Official Relay** | Support Cargo Sparse Protocol (RFC 2785); persistent caching for `.crate` archives | [315 Specification](../features/315-rust-cargo-crates-proxy-en.md) | ✅ **Completed** |
-| **Feature 316** | **Multi-Ecosystem Integration Test Suite & Presets** | High-fidelity Mock cluster; end-to-end regression across all ecosystems; production-ready `proxy.conf` standard configuration | [316 Specification](../features/316-multi-ecosystem-integration-en.md) | ✅ **Completed** |
-| *(Deferred)* | Metadata Soft TTL & Stale-While-Revalidate Engine | `ttl` directive parser; local short-term metadata caching with 304 background revalidation to eliminate CI upstream load | [Todo Specification](../todo/metadata-soft-ttl-swr-en.md) | Backlog |
+| **Feature 311** | **Streaming Response Body Rewriter Engine** | Generic response body rewriter foundation; `rewrite` directive with `{PROXY_HOST}`; ETag stripping & chunked encoding | Feature 311 Specification | ✅ **Completed** |
+| **Feature 312** | **Official PyPI Gateway & Multi-Host Routing** | Coordinated routing for `pypi.org` & `files.pythonhosted.org`; PEP 503/691 index rewriting; `.whl` caching | Feature 312 Specification | ✅ **Completed** |
+| **Feature 313** | **Official npm Registry Gateway & Tarball Rewriter** | Rewrite `dist.tarball` absolute URLs in package JSON; `.tgz` caching and request coalescing; client `.npmrc` integration | Feature 313 Specification | ✅ **Completed** |
+| **Feature 314** | **Docker / OCI Registry v2 Relay & Layer Caching** | Intercept `/v2/` & relay Bearer Token challenge; immutable layer blob caching with Range 206 support; dynamic manifest 304 passthrough | Feature 314 Specification | ✅ **Completed** |
+| **Feature 315** | **Rust Cargo Sparse Index & Crates Official Relay** | Support Cargo Sparse Protocol (RFC 2785); persistent caching for `.crate` archives | Feature 315 Specification | ✅ **Completed** |
+| **Feature 316** | **Multi-Ecosystem Integration Test Suite & Presets** | High-fidelity Mock cluster; end-to-end regression across all ecosystems; production-ready `proxy.conf` standard configuration | Feature 316 Specification | ✅ **Completed** |
+| *(Deferred)* | Metadata Soft TTL & Stale-While-Revalidate Engine | `ttl` directive parser; local short-term metadata caching with 304 background revalidation to eliminate CI upstream load | Backlog Specification | Backlog |
 
 ---
 
