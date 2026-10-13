@@ -16,7 +16,6 @@ import (
 	"uri-proxy/internal/downloader"
 	"uri-proxy/internal/plugin"
 	"uri-proxy/internal/rewriter"
-	"uri-proxy/internal/ttl"
 )
 
 func TestProxy_AliasRewriteAndServe(t *testing.T) {
@@ -47,11 +46,10 @@ func TestProxy_AliasRewriteAndServe(t *testing.T) {
 	})
 
 	downMgr := downloader.NewManager(tmpDir, time.Minute)
-	ttlMgr := ttl.NewManager()
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	plugins := plugin.DefaultRegistry()
 
-	server := NewServer(cfg, tmpDir, downMgr, ttlMgr, rw, plugins, ":8888")
+	server := NewServer(cfg, tmpDir, downMgr, rw, plugins, ":8888")
 
 	req := httptest.NewRequest("GET", "/ubuntu/dists/Release", nil)
 	w := httptest.NewRecorder()
@@ -82,11 +80,10 @@ func TestProxy_LocalRangeServe(t *testing.T) {
 
 	cfg := config.NewProxyConfig()
 	downMgr := downloader.NewManager(tmpDir, time.Minute)
-	ttlMgr := ttl.NewManager()
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	plugins := plugin.DefaultRegistry()
 
-	server := NewServer(cfg, tmpDir, downMgr, ttlMgr, rw, plugins, ":8888")
+	server := NewServer(cfg, tmpDir, downMgr, rw, plugins, ":8888")
 
 	// Range request: bytes=0-3
 	req := httptest.NewRequest("GET", "/"+uri, nil)
@@ -137,10 +134,9 @@ func TestProxy_Non200NoCachePersistence(t *testing.T) {
 
 	cfg := config.NewProxyConfig()
 	downMgr := downloader.NewManager(tmpDir, time.Minute)
-	ttlMgr := ttl.NewManager()
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	plugins := plugin.DefaultRegistry()
-	server := NewServer(cfg, tmpDir, downMgr, ttlMgr, rw, plugins, ":8888")
+	server := NewServer(cfg, tmpDir, downMgr, rw, plugins, ":8888")
 
 	// 1. 请求 404 资源：透传 404，绝不创建文件
 	req404 := httptest.NewRequest("GET", "/"+upstream.URL+"/repo/not-found.deb", nil)

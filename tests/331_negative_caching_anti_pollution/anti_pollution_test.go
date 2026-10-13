@@ -20,7 +20,6 @@ import (
 	"uri-proxy/internal/plugin"
 	"uri-proxy/internal/proxy"
 	"uri-proxy/internal/rewriter"
-	"uri-proxy/internal/ttl"
 )
 
 func setupTestProxy(t *testing.T) (*proxy.Server, string, func()) {
@@ -31,11 +30,10 @@ func setupTestProxy(t *testing.T) (*proxy.Server, string, func()) {
 
 	cfg := config.NewProxyConfig()
 	downMgr := downloader.NewManager(tmpDir, time.Minute)
-	ttlMgr := ttl.NewManager()
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	plugins := plugin.DefaultRegistry()
 
-	server := proxy.NewServer(cfg, tmpDir, downMgr, ttlMgr, rw, plugins, ":8888")
+	server := proxy.NewServer(cfg, tmpDir, downMgr, rw, plugins, ":8888")
 
 	cleanup := func() {
 		_ = os.RemoveAll(tmpDir)

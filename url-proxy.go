@@ -12,7 +12,6 @@ import (
 	"uri-proxy/internal/plugin"
 	"uri-proxy/internal/proxy"
 	"uri-proxy/internal/rewriter"
-	"uri-proxy/internal/ttl"
 )
 
 var (
@@ -49,13 +48,12 @@ func main() {
 	downMgr.StartWatchdog()
 	defer downMgr.StopWatchdog()
 
-	// 4. 初始化元数据软过期 SWR 存储、动态重写引擎与协议插件注册中心
-	ttlMgr := ttl.NewManager()
+	// 4. 初始化动态重写引擎与协议插件注册中心
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	plugins := plugin.DefaultRegistry()
 
 	// 5. 装配代理协议服务核心
-	proxyServer := proxy.NewServer(cfg, resolvedCacheDir, downMgr, ttlMgr, rw, plugins, *addr)
+	proxyServer := proxy.NewServer(cfg, resolvedCacheDir, downMgr, rw, plugins, *addr)
 
 	server := &http.Server{
 		Addr:    *addr,

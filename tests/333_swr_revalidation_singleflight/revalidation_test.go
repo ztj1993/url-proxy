@@ -20,7 +20,6 @@ import (
 	"uri-proxy/internal/plugin"
 	"uri-proxy/internal/proxy"
 	"uri-proxy/internal/rewriter"
-	"uri-proxy/internal/ttl"
 )
 
 func createTestProxy(tmpDir string) *proxy.Server {
@@ -34,11 +33,10 @@ func createTestProxy(tmpDir string) *proxy.Server {
 	})
 
 	downMgr := downloader.NewManager(tmpDir, time.Minute)
-	ttlMgr := ttl.NewManager()
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	plugins := plugin.DefaultRegistry()
 
-	return proxy.NewServer(cfg, tmpDir, downMgr, ttlMgr, rw, plugins, ":8888")
+	return proxy.NewServer(cfg, tmpDir, downMgr, rw, plugins, ":8888")
 }
 
 func TestConcurrentRevalidationCoalescing(t *testing.T) {

@@ -14,17 +14,15 @@ import (
 	"uri-proxy/internal/plugin"
 	"uri-proxy/internal/proxy"
 	"uri-proxy/internal/rewriter"
-	"uri-proxy/internal/ttl"
 )
 
 func createServerWithTimeout(t *testing.T, tmpDir string, headerTimeout time.Duration) *proxy.Server {
 	cfg := config.NewProxyConfig()
 	downMgr := downloader.NewManager(tmpDir, time.Minute)
-	ttlMgr := ttl.NewManager()
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	plugins := plugin.DefaultRegistry()
 
-	server := proxy.NewServer(cfg, tmpDir, downMgr, ttlMgr, rw, plugins, ":8888")
+	server := proxy.NewServer(cfg, tmpDir, downMgr, rw, plugins, ":8888")
 
 	if headerTimeout > 0 {
 		tunedTransport := proxy.NewUpstreamTransport()

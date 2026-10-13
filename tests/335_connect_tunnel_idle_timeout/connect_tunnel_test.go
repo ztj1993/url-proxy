@@ -17,17 +17,15 @@ import (
 	"uri-proxy/internal/plugin"
 	"uri-proxy/internal/proxy"
 	"uri-proxy/internal/rewriter"
-	"uri-proxy/internal/ttl"
 )
 
 func createTunnelProxyServer(tunnelTimeout time.Duration) (*proxy.Server, *httptest.Server) {
 	cfg := config.NewProxyConfig()
 	downMgr := downloader.NewManager(os.TempDir(), time.Minute)
-	ttlMgr := ttl.NewManager()
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
 	plugins := plugin.DefaultRegistry()
 
-	proxyServer := proxy.NewServer(cfg, os.TempDir(), downMgr, ttlMgr, rw, plugins, ":8888")
+	proxyServer := proxy.NewServer(cfg, os.TempDir(), downMgr, rw, plugins, ":8888")
 	if tunnelTimeout > 0 {
 		proxyServer.SetTunnelTimeout(tunnelTimeout)
 	}

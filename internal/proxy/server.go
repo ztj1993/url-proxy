@@ -15,7 +15,6 @@ import (
 	"uri-proxy/internal/downloader"
 	"uri-proxy/internal/plugin"
 	"uri-proxy/internal/rewriter"
-	"uri-proxy/internal/ttl"
 )
 
 // Server 统一代理协议服务器
@@ -23,7 +22,6 @@ type Server struct {
 	cfg           *config.ProxyConfig
 	cacheDir      string
 	downMgr       *downloader.Manager
-	ttlMgr        *ttl.TTLManager
 	rewriter      *rewriter.BodyRewriter
 	plugins       *plugin.Registry
 	addr          string
@@ -55,7 +53,6 @@ func NewServer(
 	cfg *config.ProxyConfig,
 	cacheDir string,
 	downMgr *downloader.Manager,
-	ttlMgr *ttl.TTLManager,
 	rw *rewriter.BodyRewriter,
 	plugins *plugin.Registry,
 	addr string,
@@ -64,7 +61,6 @@ func NewServer(
 		cfg:           cfg,
 		cacheDir:      cacheDir,
 		downMgr:       downMgr,
-		ttlMgr:        ttlMgr,
 		rewriter:      rw,
 		plugins:       plugins,
 		addr:          addr,
