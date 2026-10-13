@@ -72,18 +72,32 @@ func (s *Server) handleDownload(
 				close(job.HeaderDone)
 				return
 			}
-			defer func(Body io.ReadCloser) {
-				_ = Body.Close()
-			}(resp.Body)
 
 			job.StatusCode = resp.StatusCode
 			copyHeader(job.Header, resp.Header)
 
 			if resp.StatusCode == http.StatusNotModified {
+				_ = resp.Body.Close()
 				log.Printf("[%d] job not modified (304): %s", reqID, uri)
 				close(job.HeaderDone)
 				return
 			}
+
+			if resp.StatusCode != http.StatusOK {
+				log.Printf("[%d] upstream non-200 response (%d): %s (skip disk caching)", reqID, resp.StatusCode, uri)
+				s.downMgr.Remove(uri)
+				job.Body = resp.Body
+				close(job.HeaderDone)
+				select {
+				case <-job.StreamDone:
+				case <-ctx.Done():
+				}
+				return
+			}
+
+			defer func(Body io.ReadCloser) {
+				_ = Body.Close()
+			}(resp.Body)
 
 			length, _ := strconv.ParseInt(
 				resp.Header.Get("Content-Length"), 10, 64,
@@ -160,11 +174,28 @@ func (s *Server) handleDownload(
 	}
 
 	copyHeader(w.Header(), job.Header)
-	w.Header().Set("Accept-Ranges", "bytes")
+	if job.StatusCode == http.StatusOK {
+		w.Header().Set("Accept-Ranges", "bytes")
+	}
 	w.WriteHeader(job.StatusCode)
 
 	if job.StatusCode == http.StatusNotModified {
 		log.Printf("[%d] 304 response sent: %s", reqID, uri)
+		return
+	}
+
+	if job.StatusCode != http.StatusOK {
+		if isLeader {
+			s.downMgr.Remove(uri)
+			if job.Body != nil {
+				_, _ = io.Copy(w, job.Body)
+				_ = job.Body.Close()
+			}
+			close(job.StreamDone)
+			log.Printf("[%d] non-200 stream forwarded (%d): %s", reqID, job.StatusCode, uri)
+		} else {
+			log.Printf("[%d] follower non-200 response (%d) sent: %s", reqID, job.StatusCode, uri)
+		}
 		return
 	}
 

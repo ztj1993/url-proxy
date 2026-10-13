@@ -2,6 +2,7 @@ package downloader
 
 import (
 	"context"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -16,8 +17,10 @@ type DownloadJob struct {
 	FilePath   string
 	Header     http.Header
 	StatusCode int
+	Body       io.ReadCloser      // 用于非 200 响应透传
 	HeaderDone chan struct{}      // Header 准备好信号
 	Done       chan struct{}      // 下载完成信号
+	StreamDone chan struct{}      // 非 200 流式透传完成信号
 	Err        error
 	Cond       *sync.Cond         // 用于广播新数据写入
 	Mu         sync.Mutex         // 配合 Cond 使用
@@ -33,6 +36,15 @@ type DownloadJob struct {
 func (job *DownloadJob) TryRename(reqID uint64) {
 	job.RenameMu.Lock()
 	defer job.RenameMu.Unlock()
+
+	// Feature 331 双重断言校验：非 200 响应严禁重命名，强制清理临时文件
+	if job.StatusCode != http.StatusOK {
+		log.Printf("[%d] rename skipped: status code is non-200 (%d), removing tmp file: %s", reqID, job.StatusCode, job.TmpName)
+		if job.TmpName != "" {
+			_ = os.Remove(job.TmpName)
+		}
+		return
+	}
 
 	// 如果已经重命名成功，或者临时文件不存在，则直接返回
 	if _, err := os.Stat(job.FinalName); err == nil {
@@ -103,6 +115,7 @@ func (m *Manager) GetOrCreate(uri string) (*DownloadJob, bool) {
 		Uri:        uri,
 		HeaderDone: make(chan struct{}),
 		Done:       make(chan struct{}),
+		StreamDone: make(chan struct{}),
 		Header:     make(http.Header),
 		LastActive: time.Now(),
 	}

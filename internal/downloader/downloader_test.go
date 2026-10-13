@@ -3,6 +3,7 @@ package downloader
 import (
 	"context"
 	"errors"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -43,9 +44,10 @@ func TestDownloadJob_TryRename(t *testing.T) {
 	_ = os.WriteFile(tmpName, []byte("data"), 0644)
 
 	job := &DownloadJob{
-		TmpName:   tmpName,
-		FinalName: finalName,
-		Readers:   1, // 模拟有 Follower 正在读取
+		StatusCode: http.StatusOK,
+		TmpName:    tmpName,
+		FinalName:  finalName,
+		Readers:    1, // 模拟有 Follower 正在读取
 	}
 
 	// Readers > 0: 不应重命名
@@ -67,14 +69,34 @@ func TestDownloadJob_TryRename(t *testing.T) {
 	_ = os.WriteFile(tmpErrName, []byte("partial"), 0644)
 
 	errJob := &DownloadJob{
-		TmpName:   tmpErrName,
-		FinalName: finalErrName,
-		Err:       errors.New("download failed"),
-		Readers:   0,
+		StatusCode: http.StatusOK,
+		TmpName:    tmpErrName,
+		FinalName:  finalErrName,
+		Err:        errors.New("download failed"),
+		Readers:    0,
 	}
 	errJob.TryRename(3)
 	if _, err := os.Stat(tmpErrName); !os.IsNotExist(err) {
 		t.Errorf("tmp file should be removed on error")
+	}
+
+	// Feature 331 校验：非 200 响应严禁重命名，强制清理临时文件
+	tmp404Name := filepath.Join(tmpDir, "404.tmp")
+	final404Name := filepath.Join(tmpDir, "404.final")
+	_ = os.WriteFile(tmp404Name, []byte("404 error html"), 0644)
+
+	non200Job := &DownloadJob{
+		StatusCode: http.StatusNotFound,
+		TmpName:    tmp404Name,
+		FinalName:  final404Name,
+		Readers:    0,
+	}
+	non200Job.TryRename(4)
+	if _, err := os.Stat(final404Name); err == nil {
+		t.Errorf("non-200 job should never create final file")
+	}
+	if _, err := os.Stat(tmp404Name); !os.IsNotExist(err) {
+		t.Errorf("non-200 job should clean up tmp file")
 	}
 }
 
