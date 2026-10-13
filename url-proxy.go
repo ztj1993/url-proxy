@@ -32,6 +32,15 @@ func main() {
 	}
 	log.Printf("cache dir: %s", resolvedCacheDir)
 
+	// 异步清理启动残留孤儿临时文件 (Feature 336)
+	go func() {
+		if removed, err := cache.CleanOrphanTempFiles(resolvedCacheDir, 1*time.Hour); err != nil {
+			log.Printf("orphan temp file cleanup error: %v", err)
+		} else if removed > 0 {
+			log.Printf("orphan temp file cleanup completed: removed %d stale files", removed)
+		}
+	}()
+
 	// 2. 加载统一代理配置
 	cfg := config.Load(*conf)
 

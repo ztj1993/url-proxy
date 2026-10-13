@@ -6,6 +6,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"uri-proxy/internal/config"
 )
@@ -63,6 +64,61 @@ func EnsureCacheDir(customDir string) (string, error) {
 		return "", err
 	}
 	return dir, nil
+}
+
+// IsTempCacheFile 判断文件名是否符合下载临时文件命名格式 (<name>.<18~20位纳秒时间戳>) (Feature 336)
+func IsTempCacheFile(fileName string) bool {
+	lastDot := strings.LastIndexByte(fileName, '.')
+	if lastDot <= 0 || lastDot >= len(fileName)-1 {
+		return false
+	}
+
+	ext := fileName[lastDot+1:]
+	if len(ext) < 18 || len(ext) > 20 {
+		return false
+	}
+
+	for i := 0; i < len(ext); i++ {
+		if ext[i] < '0' || ext[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// CleanOrphanTempFiles 扫描指定缓存目录并删除修改时间早于 (now - maxAge) 的孤儿临时文件，返回清理文件数量 (Feature 336)
+func CleanOrphanTempFiles(cacheDir string, maxAge time.Duration) (int, error) {
+	if cacheDir == "" {
+		return 0, nil
+	}
+
+	now := time.Now()
+	removedCount := 0
+
+	err := filepath.WalkDir(cacheDir, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if d.IsDir() {
+			return nil
+		}
+
+		if IsTempCacheFile(d.Name()) {
+			info, err := d.Info()
+			if err != nil {
+				return nil
+			}
+
+			if now.Sub(info.ModTime()) >= maxAge {
+				if removeErr := os.Remove(path); removeErr == nil {
+					removedCount++
+				}
+			}
+		}
+		return nil
+	})
+
+	return removedCount, err
 }
 
 // MatchBypassRule 按照规则链匹配免缓存判定 (Feature 305)
