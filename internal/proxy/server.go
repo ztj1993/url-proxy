@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"fmt"
-	"io"
 	"log"
 	"net"
 	"net/http"
@@ -21,15 +20,16 @@ import (
 
 // Server 统一代理协议服务器
 type Server struct {
-	cfg        *config.ProxyConfig
-	cacheDir   string
-	downMgr    *downloader.Manager
-	ttlMgr     *ttl.TTLManager
-	rewriter   *rewriter.BodyRewriter
-	plugins    *plugin.Registry
-	addr       string
-	requestID  uint64
-	httpClient *http.Client
+	cfg           *config.ProxyConfig
+	cacheDir      string
+	downMgr       *downloader.Manager
+	ttlMgr        *ttl.TTLManager
+	rewriter      *rewriter.BodyRewriter
+	plugins       *plugin.Registry
+	addr          string
+	requestID     uint64
+	httpClient    *http.Client
+	tunnelTimeout time.Duration
 }
 
 // NewUpstreamTransport 创建针对高并发镜像代理优化的 HTTP Transport (Feature 334)
@@ -61,14 +61,15 @@ func NewServer(
 	addr string,
 ) *Server {
 	return &Server{
-		cfg:        cfg,
-		cacheDir:   cacheDir,
-		downMgr:    downMgr,
-		ttlMgr:     ttlMgr,
-		rewriter:   rw,
-		plugins:    plugins,
-		addr:       addr,
-		httpClient: &http.Client{Transport: NewUpstreamTransport()},
+		cfg:           cfg,
+		cacheDir:      cacheDir,
+		downMgr:       downMgr,
+		ttlMgr:        ttlMgr,
+		rewriter:      rw,
+		plugins:       plugins,
+		addr:          addr,
+		httpClient:    &http.Client{Transport: NewUpstreamTransport()},
+		tunnelTimeout: 5 * time.Minute,
 	}
 }
 
@@ -87,6 +88,19 @@ func (s *Server) HTTPClient() *http.Client {
 
 func (s *Server) doRequest(req *http.Request) (*http.Response, error) {
 	return s.HTTPClient().Do(req)
+}
+
+// SetTunnelTimeout 设置 CONNECT 隧道空闲超时
+func (s *Server) SetTunnelTimeout(d time.Duration) {
+	s.tunnelTimeout = d
+}
+
+// TunnelTimeout 获取 CONNECT 隧道空闲超时
+func (s *Server) TunnelTimeout() time.Duration {
+	if s.tunnelTimeout <= 0 {
+		return 5 * time.Minute
+	}
+	return s.tunnelTimeout
 }
 
 func copyHeader(dst http.Header, src http.Header) {
@@ -120,40 +134,9 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		nocacheRules = s.cfg.NoCacheRules
 	}
 
-	// 1. 处理 HTTPS CONNECT 隧道代理 (用于标准正向代理下的 HTTPS 透传)
+	// 1. 处理 HTTPS CONNECT 隧道代理 (Feature 335)
 	if r.Method == http.MethodConnect {
-		log.Printf("[%d] connect tunnel: %s", reqID, r.Host)
-		destConn, err := net.DialTimeout("tcp", r.Host, 10*time.Second)
-		if err != nil {
-			log.Printf("[%d] connect dial err: %v", reqID, err)
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		hijacker, ok := w.(http.Hijacker)
-		if !ok {
-			log.Printf("[%d] connect hijack not supported", reqID)
-			http.Error(w, "Hijacking not supported", http.StatusInternalServerError)
-			_ = destConn.Close()
-			return
-		}
-		clientConn, _, err := hijacker.Hijack()
-		if err != nil {
-			log.Printf("[%d] connect hijack err: %v", reqID, err)
-			http.Error(w, err.Error(), http.StatusServiceUnavailable)
-			_ = destConn.Close()
-			return
-		}
-		_, _ = clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n"))
-		go func() {
-			defer destConn.Close()
-			defer clientConn.Close()
-			_, _ = io.Copy(destConn, clientConn)
-		}()
-		go func() {
-			defer destConn.Close()
-			defer clientConn.Close()
-			_, _ = io.Copy(clientConn, destConn)
-		}()
+		s.handleConnect(w, r, reqID)
 		return
 	}
 
