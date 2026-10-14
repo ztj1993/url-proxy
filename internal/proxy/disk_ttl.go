@@ -22,11 +22,7 @@ func (p *diskTTLPolicy) prepareRequest(ctx context.Context, r *http.Request, tar
 	if err != nil {
 		return nil, err
 	}
-	for k, vv := range r.Header {
-		for _, v := range vv {
-			req.Header.Add(k, v)
-		}
-	}
+	relayRequestHeaders(req, r)
 	if fileExists {
 		req.Header.Set("If-Modified-Since", stat.ModTime().UTC().Format(http.TimeFormat))
 	}

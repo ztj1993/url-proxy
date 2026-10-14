@@ -21,12 +21,19 @@ func (p *staticDownloadPolicy) prepareRequest(ctx context.Context, r *http.Reque
 	if err != nil {
 		return nil, err
 	}
-	jobForwardHeaders := []string{"If-Modified-Since", "If-None-Match", "Authorization", "User-Agent"}
-	for _, h := range jobForwardHeaders {
-		if val := r.Header.Get(h); val != "" {
-			req.Header.Set(h, val)
-		}
+
+	// 统一透传客户端请求头，支持多值并过滤逐跳标头 (Feature 341)
+	relayRequestHeaders(req, r)
+
+	// 落盘防压缩守卫：显式剥离客户端 Accept-Encoding，交由 Transport 自动透明解压，确保落盘为原始制品 (Feature 341)
+	req.Header.Del("Accept-Encoding")
+
+	// 条件请求防传染守卫：本地无缓存文件时，强制剥离客户端条件头，确保 Leader 必定获取 200 OK 建立缓存 (Feature 341)
+	if !fileExists {
+		req.Header.Del("If-Modified-Since")
+		req.Header.Del("If-None-Match")
 	}
+
 	return req, nil
 }
 

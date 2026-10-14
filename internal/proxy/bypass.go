@@ -41,13 +41,7 @@ func (s *Server) handleBypass(
 		return
 	}
 
-	bypassForwardHeaders := []string{"If-Modified-Since", "If-None-Match", "Range", "If-Range", "Cache-Control", "User-Agent", "Accept", "Accept-Language", "Authorization"}
-	for _, h := range bypassForwardHeaders {
-		if val := r.Header.Get(h); val != "" {
-			req.Header.Set(h, val)
-		}
-	}
-
+	relayRequestHeaders(req, r)
 	if hasRewriteMatch {
 		req.Header.Set("Accept-Encoding", "identity")
 	}

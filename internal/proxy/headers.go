@@ -1,0 +1,50 @@
+package proxy
+
+import (
+	"net/http"
+	"strings"
+)
+
+// hopByHopRequestHeaders 定义 RFC 9110 Section 7.6.1 标准逐跳标头与受保护标头
+var hopByHopRequestHeaders = map[string]bool{
+	"Connection":          true,
+	"Proxy-Connection":    true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+	"Host":                true, // 由 http.Request.Host 独立管理
+}
+
+// relayRequestHeaders 统一全量透传客户端端到端请求头至出向请求，保留多值并严格过滤逐跳标头 (Feature 341)
+func relayRequestHeaders(dst *http.Request, src *http.Request) {
+	if src == nil || dst == nil {
+		return
+	}
+
+	// 1. 解析 Connection 标头中动态声明的逐跳字段
+	dynamicHops := make(map[string]bool)
+	if connVal := src.Header.Get("Connection"); connVal != "" {
+		parts := strings.Split(connVal, ",")
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				dynamicHops[http.CanonicalHeaderKey(trimmed)] = true
+			}
+		}
+	}
+
+	// 2. 遍历客户端所有请求头，过滤逐跳标头并保留全部多值
+	for k, vv := range src.Header {
+		canonicalKey := http.CanonicalHeaderKey(k)
+		if hopByHopRequestHeaders[canonicalKey] || dynamicHops[canonicalKey] {
+			continue
+		}
+		for _, v := range vv {
+			dst.Header.Add(k, v)
+		}
+	}
+}

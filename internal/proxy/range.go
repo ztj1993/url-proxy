@@ -42,12 +42,7 @@ func (s *Server) handleHead(
 		return
 	}
 
-	headForwardHeaders := []string{"Authorization", "User-Agent", "Accept", "If-Modified-Since", "If-None-Match"}
-	for _, h := range headForwardHeaders {
-		if val := r.Header.Get(h); val != "" {
-			req.Header.Set(h, val)
-		}
-	}
+	relayRequestHeaders(req, r)
 
 	resp, err := s.doRequest(req)
 	if err != nil {
@@ -91,12 +86,7 @@ func (s *Server) handleRange(
 		return
 	}
 
-	rangeRelayHeaders := []string{"Range", "If-Range", "If-Modified-Since", "If-None-Match", "User-Agent", "Authorization"}
-	for _, h := range rangeRelayHeaders {
-		if val := r.Header.Get(h); val != "" {
-			req.Header.Set(h, val)
-		}
-	}
+	relayRequestHeaders(req, r)
 
 	resp, err := s.doRequest(req)
 	if err != nil {
