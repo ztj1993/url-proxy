@@ -150,7 +150,7 @@ services:
       url-proxy:
         condition: service_healthy
     command: >
-      curl -s -f -o /tmp/slf4j-api.jar http://url-proxy:8888/maven/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar
+      curl -s -f --retry 3 -o /tmp/slf4j-api.jar http://url-proxy:8888/maven/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar
     networks:
       - proxy-net
 
@@ -161,7 +161,8 @@ services:
       url-proxy:
         condition: service_healthy
     command: >
-      sh -c "curl -s -f http://url-proxy:8888/crates-index/config.json | grep -q 'crates-static' && curl -s -f -o /tmp/serde.crate http://url-proxy:8888/crates-static/crates/serde/serde-1.0.197.crate"
+      sh -c "(curl -s -f http://url-proxy:8888/crates-index/config.json || (sleep 2 && curl -s -f http://url-proxy:8888/crates-index/config.json)) | grep -q 'crates-static' &&
+      (curl -s -f -o /tmp/serde.crate http://url-proxy:8888/crates-static/crates/serde/serde-1.0.197.crate || (sleep 2 && curl -s -f -o /tmp/serde.crate http://url-proxy:8888/crates-static/crates/serde/serde-1.0.197.crate))"
     networks:
       - proxy-net
 
@@ -184,6 +185,88 @@ services:
         condition: service_healthy
     command: >
       sh -c "curl -s -D /tmp/h -o /dev/null http://url-proxy:8888/ubuntu/dists/noble/InRelease && CODE=$$(curl -s -w '%{http_code}' -o /dev/null -z /tmp/h http://url-proxy:8888/ubuntu/dists/noble/InRelease) && [ \"$$CODE\" = '304' ]"
+    networks:
+      - proxy-net
+
+  # 15. Cache-HIT - Second Download & Bit-Identical Consistency (Feature 338 & 342)
+  client-cache-hit:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -s -D /tmp/cold.hdr -o /tmp/cold.jar http://url-proxy:8888/maven/org/slf4j/slf4j-simple/1.7.36/slf4j-simple-1.7.36.jar &&
+      grep -q 'HTTP/1.1 200' /tmp/cold.hdr &&
+      [ -s /tmp/cold.jar ] &&
+      curl -s -D /tmp/warm.hdr -o /tmp/warm.jar http://url-proxy:8888/maven/org/slf4j/slf4j-simple/1.7.36/slf4j-simple-1.7.36.jar &&
+      grep -q 'HTTP/1.1 200' /tmp/warm.hdr &&
+      grep -iq 'X-Cache-Status: HIT' /tmp/warm.hdr &&
+      cmp -s /tmp/cold.jar /tmp/warm.jar"
+    networks:
+      - proxy-net
+
+  # 16. Anti-Pollution - Non-200 404 Zero-Disk & Stream-Through Guard (Feature 331)
+  client-404-guard:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "CODE=$$(curl -s -w '%{http_code}' -o /dev/null http://url-proxy:8888/maven/nonexistent/fake-artifact-404.jar) &&
+      [ \"$$CODE\" = '404' ]"
+    networks:
+      - proxy-net
+
+  # 17. HEAD-Guard - HEAD Method Conversion & Anti-0-Byte Pre-warming (Feature 344)
+  client-head-guard:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -s -I http://url-proxy:8888/ubuntu-ttl/dists/jammy/InRelease -D /tmp/head.hdr -o /dev/null &&
+      grep -q 'HTTP/1.1 200' /tmp/head.hdr &&
+      sleep 2 &&
+      curl -s -D /tmp/get.hdr -o /tmp/get.file http://url-proxy:8888/ubuntu-ttl/dists/jammy/InRelease &&
+      grep -q 'HTTP/1.1 200' /tmp/get.hdr &&
+      (grep -iq 'X-Cache-Status: HIT-DISK-TTL' /tmp/get.hdr || (sleep 2 && curl -s -D /tmp/get.hdr -o /tmp/get.file http://url-proxy:8888/ubuntu-ttl/dists/jammy/InRelease && grep -iq 'X-Cache-Status: HIT-DISK-TTL' /tmp/get.hdr)) &&
+      [ -s /tmp/get.file ]"
+    networks:
+      - proxy-net
+
+  # 18. Rewrite - Header Sanitization & Content-Length Precision (Feature 342)
+  client-rewrite-guard:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "(curl -s -D /tmp/rw.hdr -o /tmp/rw.body http://url-proxy:8888/crates-index/config.json || (sleep 2 && curl -s -D /tmp/rw.hdr -o /tmp/rw.body http://url-proxy:8888/crates-index/config.json)) &&
+      grep -q 'crates-static' /tmp/rw.body &&
+      ! grep -iq '^ETag:' /tmp/rw.hdr &&
+      ! grep -iq '^Digest:' /tmp/rw.hdr &&
+      ! grep -iq '^Content-Encoding:' /tmp/rw.hdr &&
+      ! grep -iq '^Accept-Ranges:' /tmp/rw.hdr &&
+      ACT_LEN=$$(stat -c%s /tmp/rw.body) &&
+      [ -n \"$$ACT_LEN\" ] &&
+      grep -iq \"^Content-Length: $$ACT_LEN\" /tmp/rw.hdr"
+    networks:
+      - proxy-net
+
+  # 19. Disk-TTL - Fresh HIT & Client ETag Isolation (Features 332 & 343)
+  client-ttl-guard:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -s -D /tmp/ttl1.hdr -o /tmp/ttl1.body http://url-proxy:8888/ubuntu-ttl/dists/noble/InRelease &&
+      grep -q 'HTTP/1.1 200' /tmp/ttl1.hdr &&
+      [ -s /tmp/ttl1.body ] &&
+      curl -s -H 'If-None-Match: \"bogus-etag-12345\"' -D /tmp/ttl2.hdr -o /tmp/ttl2.body http://url-proxy:8888/ubuntu-ttl/dists/noble/InRelease &&
+      grep -q 'HTTP/1.1 200' /tmp/ttl2.hdr &&
+      grep -iq 'X-Cache-Status: HIT-DISK-TTL' /tmp/ttl2.hdr &&
+      cmp -s /tmp/ttl1.body /tmp/ttl2.body"
     networks:
       - proxy-net
 

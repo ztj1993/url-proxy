@@ -97,6 +97,36 @@ run_test() {
     local cache_msg="None"
     if [ "$cache_pattern" = "tunnel" ] || [ "$cache_pattern" = "custom" ]; then
         cache_msg="${expected_cache_desc}"
+    elif [ "$cache_pattern" = "anti-404" ]; then
+        if docker exec url-proxy find /cache -name "*fake-artifact-404*" 2>/dev/null | grep -q .; then
+            cache_msg="Contaminated"
+            status="FAIL"
+        else
+            cache_msg="${expected_cache_desc}"
+        fi
+    elif [ "$cache_pattern" = "head-guard" ]; then
+        local f
+        f=$(docker exec url-proxy find /cache -path "*ubuntu*jammy*InRelease*" 2>/dev/null | head -n 1)
+        if [ -n "$f" ]; then
+            local sz
+            sz=$(docker exec url-proxy stat -c%s "$f" 2>/dev/null || echo 0)
+            if [ "$sz" -gt 0 ]; then
+                cache_msg="${expected_cache_desc}"
+            else
+                cache_msg="Corrupted (${sz}B)"
+                status="FAIL"
+            fi
+        else
+            cache_msg="Not Cached"
+            status="FAIL"
+        fi
+    elif [ "$cache_pattern" = "disk-ttl" ]; then
+        if docker exec url-proxy find /cache -path "*ubuntu*noble*InRelease*" 2>/dev/null | grep -q .; then
+            cache_msg="${expected_cache_desc}"
+        else
+            cache_msg="Not Cached"
+            status="FAIL"
+        fi
     elif [ -n "$cache_pattern" ]; then
         # 直接在 url-proxy 容器内部检查 /cache 目录中是否存在对应文件
         if docker exec url-proxy find /cache -path "${cache_pattern}" 2>/dev/null | grep -q .; then
@@ -154,6 +184,24 @@ run_test "Range" "HTTP 206 Status" "curl range 0-499" "client-range" "custom" "2
 
 # 9. Conditional 304 Not Modified Test
 run_test "Conditional" "HTTP 304 Status" "curl conditional 304" "client-304" "custom" "304 Not Modified"
+
+# ==============================================================================================
+# Extended Stability & Governance Test Suite (Plans 330 & 340)
+# ==============================================================================================
+# 10. Cache HIT & Data Consistency (Second Download Test - Feature 342)
+run_test "Cache-HIT" "Second Download" "verify HIT & identical" "client-cache-hit" "custom" "HIT & Bit-Identical"
+
+# 11. Non-200 404 Anti-Pollution Test (Feature 331)
+run_test "Anti-Pollute" "404 Zero-Disk" "curl 404 fake-artifact" "client-404-guard" "anti-404" "Zero-Disk (Clean)"
+
+# 12. HEAD Method Conversion & Pre-warming Test (Feature 344)
+run_test "HEAD-Guard" "Method Conversion" "HEAD probe & GET warm" "client-head-guard" "head-guard" "Pre-warmed (>0 Bytes)"
+
+# 13. Response Rewrite Sanitization & Content-Length Test (Feature 342)
+run_test "Rewrite" "Header Cleansing" "strip ETag/Digest & len" "client-rewrite-guard" "custom" "Sanitized & Length OK"
+
+# 14. Disk TTL Fresh HIT & Client ETag Isolation Test (Features 332 & 343)
+run_test "Disk-TTL" "Fresh HIT & Guard" "TTL hit & ETag isolate" "client-ttl-guard" "disk-ttl" "HIT-DISK-TTL (Isolated)"
 
 # 4. 打印报告 (纯英文字符表格，无 ANSI 颜色)
 echo ""

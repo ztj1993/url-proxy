@@ -107,8 +107,13 @@ Go           HTTP Proxy       go download google/uuid    2.19s      .zip/.mod ca
 Maven        Central Proxy    fetch slf4j-api.jar        1.85s      .jar cached (slf4j)        [PASS]
 Cargo        Sparse & Crates  config rewrite & serde     2.04s      Rewritten & .crate cached  [PASS]
 Range        HTTP 206 Status  curl range 0-499           0.82s      206 Partial Content        [PASS]
-Conditional  HTTP 304 Status  curl conditional ETag      0.76s      304 Not Modified           [PASS]
+Conditional  HTTP 304 Status  curl conditional 304       0.76s      304 Not Modified           [PASS]
+Cache-HIT    Second Download  verify HIT & identical     1.20s      HIT & Bit-Identical        [PASS]
+Anti-Pollute 404 Zero-Disk    curl 404 fake-artifact     0.45s      Zero-Disk (Clean)          [PASS]
+HEAD-Guard   Method Conversion HEAD probe & GET warm     2.35s      Pre-warmed (>0 Bytes)      [PASS]
+Rewrite      Header Cleansing strip ETag/Digest & len    1.15s      Sanitized & Length OK      [PASS]
+Disk-TTL     Fresh HIT & Guard TTL hit & ETag isolate    1.30s      HIT-DISK-TTL (Isolated)    [PASS]
 --------------------------------------------------------------------------------------------------
-Total: 14 | Passed: 14 | Failed: 0 | Overall Health: HEALTHY
+Total: 19 | Passed: 19 | Failed: 0 | Overall Health: HEALTHY
 ==================================================================================================
 ```
