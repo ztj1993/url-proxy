@@ -18,7 +18,8 @@ import (
 type diskTTLPolicy struct{}
 
 func (p *diskTTLPolicy) prepareRequest(ctx context.Context, r *http.Request, targetUri string, stat os.FileInfo, fileExists bool) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, r.Method, targetUri, nil)
+	// 强制使用 GET 回源拉取完整实体并落盘，杜绝 HEAD 导致 0 字节空文件落盘污染缓存 (Feature 344)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, targetUri, nil)
 	if err != nil {
 		return nil, err
 	}
