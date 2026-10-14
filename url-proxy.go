@@ -53,7 +53,6 @@ func main() {
 	// 3. 初始化并启动并发下载任务池与后台空闲看门狗巡检
 	downMgr := downloader.NewManager(resolvedCacheDir, *idleTime)
 	downMgr.StartWatchdog()
-	defer downMgr.StopWatchdog()
 
 	// 4. 初始化动态重写引擎与协议插件注册中心
 	rw := rewriter.NewBodyRewriter(cfg.RewriteRules, cfg.Types)
