@@ -73,10 +73,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, reqID uin
 		return
 	}
 
-	timeout := s.tunnelTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Minute
-	}
+	timeout := s.TunnelTimeout()
 
 	wrappedClient := &idleTimeoutConn{Conn: clientConn, idleTimeout: timeout}
 	wrappedDest := &idleTimeoutConn{Conn: destConn, idleTimeout: timeout}
