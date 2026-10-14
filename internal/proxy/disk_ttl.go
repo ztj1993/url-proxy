@@ -86,10 +86,6 @@ func (p *diskTTLPolicy) handleResponse(reqID uint64, uri string, name string, re
 		return true
 	}
 
-	if resp.StatusCode != http.StatusOK {
-		return false
-	}
-
 	return false
 }
 
