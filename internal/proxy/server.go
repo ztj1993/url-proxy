@@ -143,11 +143,7 @@ func (s *Server) TunnelTimeout() time.Duration {
 }
 
 func copyHeader(dst http.Header, src http.Header) {
-	for k, vv := range src {
-		for _, v := range vv {
-			dst.Add(k, v)
-		}
-	}
+	relayResponseHeaders(dst, src)
 }
 
 func in(target string, array []string) bool {

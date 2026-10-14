@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"compress/gzip"
 	"context"
 	"io"
 	"log"
@@ -198,12 +199,26 @@ func (s *Server) streamUpstreamToFileAndBroadcast(
 		return
 	}
 
+	var bodyReader io.Reader = resp.Body
+	if resp.Header.Get("Content-Encoding") == "gzip" {
+		log.Printf("[%d] upstream returned forced gzip encoding for static download, decompressing before caching: %s", reqID, uri)
+		gz, gzErr := gzip.NewReader(resp.Body)
+		if gzErr == nil {
+			defer gz.Close()
+			bodyReader = gz
+			job.Header.Del("Content-Encoding")
+			job.Header.Del("Content-Length")
+		} else {
+			log.Printf("[%d] failed to initialize gzip reader for forced gzip response: %v", reqID, gzErr)
+		}
+	}
+
 	job.FilePath = tmp
 	close(job.HeaderDone)
 
 	buf := make([]byte, 32*1024)
 	for {
-		n, err := resp.Body.Read(buf)
+		n, err := bodyReader.Read(buf)
 		if n > 0 {
 			job.Mu.Lock()
 			job.LastActive = time.Now()

@@ -48,3 +48,47 @@ func relayRequestHeaders(dst *http.Request, src *http.Request) {
 		}
 	}
 }
+
+// hopByHopResponseHeaders 定义 RFC 9110 Section 7.6.1 标准响应逐跳标头 (Feature 342)
+var hopByHopResponseHeaders = map[string]bool{
+	"Connection":        true,
+	"Proxy-Connection":  true,
+	"Keep-Alive":        true,
+	"Transfer-Encoding": true,
+	"Trailer":           true,
+	"Upgrade":           true,
+}
+
+// RelayResponseHeaders 过滤逐跳响应标头并安全透传端到端响应头 (Feature 342)
+func RelayResponseHeaders(dst http.Header, src http.Header) {
+	if dst == nil || src == nil {
+		return
+	}
+
+	// 1. 解析 Connection 标头中动态声明的逐跳字段
+	dynamicHops := make(map[string]bool)
+	if connVal := src.Get("Connection"); connVal != "" {
+		parts := strings.Split(connVal, ",")
+		for _, p := range parts {
+			trimmed := strings.TrimSpace(p)
+			if trimmed != "" {
+				dynamicHops[http.CanonicalHeaderKey(trimmed)] = true
+			}
+		}
+	}
+
+	// 2. 遍历源响应头，剥离静态与动态逐跳标头，忠实保留多值
+	for k, vv := range src {
+		canonicalKey := http.CanonicalHeaderKey(k)
+		if hopByHopResponseHeaders[canonicalKey] || dynamicHops[canonicalKey] {
+			continue
+		}
+		for _, v := range vv {
+			dst.Add(k, v)
+		}
+	}
+}
+
+func relayResponseHeaders(dst http.Header, src http.Header) {
+	RelayResponseHeaders(dst, src)
+}

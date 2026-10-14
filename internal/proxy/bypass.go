@@ -87,6 +87,9 @@ func (s *Server) handleBypass(
 
 		w.Header().Del("ETag")
 		w.Header().Del("Content-MD5")
+		w.Header().Del("Digest")
+		w.Header().Del("Accept-Ranges")
+		w.Header().Del("Content-Encoding")
 		w.Header().Set("Content-Length", strconv.Itoa(len(rewrittenBody)))
 
 		log.Printf("[%d] body rewritten (%d -> %d bytes): %s", reqID, len(rawBody), len(rewrittenBody), uri)

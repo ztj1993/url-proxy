@@ -52,6 +52,7 @@ func (p *staticDownloadPolicy) handleResponse(reqID uint64, uri string, name str
 	if resp.StatusCode == http.StatusNotModified {
 		_ = resp.Body.Close()
 		log.Printf("[%d] job not modified (304): %s", reqID, uri)
+		job.Header.Set("X-Cache-Status", "REVALIDATED")
 		close(job.HeaderDone)
 		return true
 	}
@@ -64,6 +65,7 @@ func (p *staticDownloadPolicy) handleResponse(reqID uint64, uri string, name str
 	if stat != nil && stat.Size() == length {
 		log.Printf("[%d] job cached: %s", reqID, uri)
 		job.FilePath = name
+		job.Header.Set("X-Cache-Status", "HIT")
 		close(job.HeaderDone)
 		return true
 	}
@@ -71,7 +73,9 @@ func (p *staticDownloadPolicy) handleResponse(reqID uint64, uri string, name str
 	return false
 }
 
-func (p *staticDownloadPolicy) onOKResponse(job *downloader.DownloadJob) {}
+func (p *staticDownloadPolicy) onOKResponse(job *downloader.DownloadJob) {
+	job.Header.Set("X-Cache-Status", "MISS")
+}
 
 func (p *staticDownloadPolicy) checkClientConditional(w http.ResponseWriter, r *http.Request, stat os.FileInfo, job *downloader.DownloadJob) bool {
 	return false
