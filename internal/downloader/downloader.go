@@ -79,7 +79,6 @@ func (job *DownloadJob) TryRename(reqID uint64) {
 
 // Manager 任务池管理器
 type Manager struct {
-	cacheDir string
 	idleTime time.Duration
 	jobs     map[string]*DownloadJob
 	jobsMu   sync.Mutex
@@ -89,12 +88,12 @@ type Manager struct {
 }
 
 // NewManager 初始化面向对象的任务池管理器
-func NewManager(cacheDir string, idleTime time.Duration) *Manager {
+// 注：首个形参原为 cacheDir，现由 proxy 层统一管理，保留匿名占位符以兼容既有调用签名
+func NewManager(_ string, idleTime time.Duration) *Manager {
 	if idleTime <= 0 {
 		idleTime = 10 * time.Minute
 	}
 	return &Manager{
-		cacheDir: cacheDir,
 		idleTime: idleTime,
 		jobs:     make(map[string]*DownloadJob),
 		stopCh:   make(chan struct{}),
