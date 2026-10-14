@@ -13,7 +13,6 @@ import (
 
 // DownloadJob 下载任务状态管理
 type DownloadJob struct {
-	Uri        string
 	FilePath   string
 	Header     http.Header
 	StatusCode int
@@ -112,7 +111,6 @@ func (m *Manager) GetOrCreate(uri string) (*DownloadJob, bool) {
 	}
 
 	job := &DownloadJob{
-		Uri:        uri,
 		HeaderDone: make(chan struct{}),
 		Done:       make(chan struct{}),
 		StreamDone: make(chan struct{}),
