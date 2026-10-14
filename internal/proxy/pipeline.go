@@ -147,7 +147,6 @@ func (s *Server) executeCoalescedPipeline(
 	if job.StatusCode != http.StatusOK {
 		w.WriteHeader(job.StatusCode)
 		if isLeader {
-			s.downMgr.Remove(uri)
 			if job.Body != nil {
 				_, _ = io.Copy(w, job.Body)
 				_ = job.Body.Close()
