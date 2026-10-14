@@ -39,14 +39,6 @@ func (c *idleTimeoutConn) CloseWrite() error {
 	return nil
 }
 
-func unwrapCloseWriter(c net.Conn) (closeWriter, bool) {
-	if itc, ok := c.(*idleTimeoutConn); ok {
-		c = itc.Conn
-	}
-	cw, ok := c.(closeWriter)
-	return cw, ok
-}
-
 // handleConnect 处理 HTTPS CONNECT 隧道代理 (Feature 335)
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, reqID uint64) {
 	log.Printf("[%d] connect tunnel: %s", reqID, r.Host)
@@ -97,7 +89,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, reqID uin
 		_, copyErr := io.Copy(dst, src)
 		if copyErr == nil {
 			// 正常传输结束，尝试执行半关闭优雅传递 TCP FIN
-			if cw, ok := unwrapCloseWriter(dst); ok {
+			if cw, ok := dst.(closeWriter); ok {
 				_ = cw.CloseWrite()
 				return
 			}
