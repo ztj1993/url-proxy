@@ -1,9 +1,13 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"uri-proxy/internal/cache"
@@ -23,6 +27,9 @@ var (
 
 func main() {
 	flag.Parse()
+
+	rootCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
 
 	// 1. 初始化并校验本地缓存目录
 	resolvedCacheDir, err := cache.EnsureCacheDir(*cacheDir)
@@ -56,9 +63,35 @@ func main() {
 	proxyServer := proxy.NewServer(cfg, resolvedCacheDir, downMgr, rw, plugins, *addr)
 
 	server := &http.Server{
-		Addr:    *addr,
-		Handler: proxyServer,
+		Addr:              *addr,
+		Handler:           proxyServer,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
-	log.Printf("http server: %s", *addr)
-	log.Fatal(server.ListenAndServe())
+
+	serverErr := make(chan error, 1)
+	go func() {
+		log.Printf("http server: %s", *addr)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case err := <-serverErr:
+		log.Fatalf("http server startup error: %v", err)
+	case <-rootCtx.Done():
+		log.Println("received shutdown signal, starting graceful shutdown...")
+	}
+
+	// 6. 执行优雅停机与资源回收流程 (Feature 339)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http server shutdown warning: %v", err)
+	}
+
+	downMgr.Shutdown()
+	proxyServer.Close()
+	log.Println("graceful shutdown completed")
 }

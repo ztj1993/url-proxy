@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -28,6 +29,8 @@ type Server struct {
 	requestID     uint64
 	httpClient    *http.Client
 	tunnelTimeout time.Duration
+	activeTunnels map[net.Conn]struct{}
+	tunnelsMu     sync.Mutex
 }
 
 // NewUpstreamTransport 创建针对高并发镜像代理优化的 HTTP Transport (Feature 334)
@@ -66,7 +69,47 @@ func NewServer(
 		addr:          addr,
 		httpClient:    &http.Client{Transport: NewUpstreamTransport()},
 		tunnelTimeout: 5 * time.Minute,
+		activeTunnels: make(map[net.Conn]struct{}),
 	}
+}
+
+// Close 释放代理服务器持有的长连接资源与空闲连接池 (Feature 339)
+func (s *Server) Close() {
+	if s.httpClient != nil {
+		if tr, ok := s.httpClient.Transport.(*http.Transport); ok {
+			tr.CloseIdleConnections()
+		}
+	}
+	s.closeTunnels()
+}
+
+func (s *Server) trackTunnel(conns ...net.Conn) {
+	s.tunnelsMu.Lock()
+	defer s.tunnelsMu.Unlock()
+	for _, c := range conns {
+		if c != nil {
+			s.activeTunnels[c] = struct{}{}
+		}
+	}
+}
+
+func (s *Server) untrackTunnel(conns ...net.Conn) {
+	s.tunnelsMu.Lock()
+	defer s.tunnelsMu.Unlock()
+	for _, c := range conns {
+		if c != nil {
+			delete(s.activeTunnels, c)
+		}
+	}
+}
+
+func (s *Server) closeTunnels() {
+	s.tunnelsMu.Lock()
+	defer s.tunnelsMu.Unlock()
+	for c := range s.activeTunnels {
+		_ = c.Close()
+	}
+	s.activeTunnels = make(map[net.Conn]struct{})
 }
 
 // SetHTTPClient 设置出向 HTTP 客户端（主要用于测试中调整超时参数）

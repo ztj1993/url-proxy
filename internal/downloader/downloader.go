@@ -85,6 +85,7 @@ type Manager struct {
 	jobs     map[string]*DownloadJob
 	jobsMu   sync.Mutex
 	stopCh   chan struct{}
+	stopOnce sync.Once
 	wg       sync.WaitGroup
 }
 
@@ -164,8 +165,27 @@ func (m *Manager) StartWatchdog() {
 	}()
 }
 
-// StopWatchdog 优雅关闭后台巡检
+// StopWatchdog 优雅关闭后台巡检（支持幂等调用）
 func (m *Manager) StopWatchdog() {
-	close(m.stopCh)
-	m.wg.Wait()
+	m.stopOnce.Do(func() {
+		close(m.stopCh)
+		m.wg.Wait()
+	})
+}
+
+// Shutdown 停止后台看门狗并取消所有正在进行中的下载任务 (Feature 339)
+func (m *Manager) Shutdown() {
+	m.StopWatchdog()
+
+	m.jobsMu.Lock()
+	defer m.jobsMu.Unlock()
+
+	for uri, job := range m.jobs {
+		job.Mu.Lock()
+		if job.Cancel != nil {
+			log.Printf("shutdown: cancelling active job: %s", uri)
+			job.Cancel()
+		}
+		job.Mu.Unlock()
+	}
 }

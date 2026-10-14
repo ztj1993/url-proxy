@@ -73,6 +73,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request, reqID uin
 	}
 	defer clientConn.Close()
 
+	s.trackTunnel(clientConn, destConn)
+	defer s.untrackTunnel(clientConn, destConn)
+
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		log.Printf("[%d] connect write 200 err: %v", reqID, err)
 		return

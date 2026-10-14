@@ -222,6 +222,7 @@ func (s *Server) streamUpstreamToFileAndBroadcast(
 		if err != nil {
 			if err == context.Canceled {
 				log.Printf("[%d] job cancelled: %s", reqID, uri)
+				job.Err = err
 			} else if err != io.EOF {
 				log.Printf("[%d] read err: %v", reqID, err)
 				job.Err = err
