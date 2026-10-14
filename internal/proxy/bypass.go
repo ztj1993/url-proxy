@@ -23,8 +23,6 @@ func (s *Server) handleBypass(
 ) {
 	if hasRewriteMatch {
 		log.Printf("[%d] dynamic body rewrite target: %s", reqID, uri)
-	} else if matchedBypass != nil && matchedBypass.TTL > 0 {
-		log.Printf("[%d] cache bypass with soft ttl (%v): %s", reqID, matchedBypass.TTL, uri)
 	} else {
 		log.Printf("[%d] cache bypass (dynamic resource): %s", reqID, uri)
 	}
