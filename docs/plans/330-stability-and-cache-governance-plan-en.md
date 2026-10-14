@@ -117,3 +117,41 @@ Each sub-plan maps 1-to-1 to an independent implementation phase in sequential o
 | **Phase 4** | **Feature 334** | Configure high-concurrency outbound `http.Transport` with `ResponseHeaderTimeout` and inject into `Server` | High connection reuse under concurrency; stalled upstream response headers fail fast on 30s timeout |
 | **Phase 5** | **Feature 335** | Harden `CONNECT` tunnels with rolling idle deadlines and TCP `CloseWrite` half-close propagation | Silent zombie tunnels close automatically upon idle timeout; unidirectional `EOF` does not truncate reverse traffic |
 | **Phase 6** | **Feature 336** | Implement asynchronous startup sweep for stale `.<timestamp>` orphan temporary files and run full regression tests | Stale orphan temp files are cleaned on startup without affecting active downloads; `go test ./...` passes 100% |
+
+---
+
+## 6. Appendix: Post-Submission Governance & Enhancements
+
+Following the formal submission of master plan `Plan 330` and the delivery of its initial six foundational sub-plans (`Feature 331` ~ `Feature 336`), three supplementary governance and hardening features (`Feature 337` ~ `Feature 339`) were introduced and delivered via this post-submission appendix to address dead code elimination, pipeline duplication, and process lifecycle governance gaps discovered during long-running production operations:
+
+### 6.1 Supplementary Feature Matrix
+
+| Feature ID | Feature Name | Logical Modules Involved | Core Supplementary Objective & Governance Achievements |
+| :---: | :--- | :--- | :--- |
+| **Feature 337** | **Legacy In-Memory Soft TTL Cleanup & Cache Convergence** | Memory TTL Module (deprecated and removed), Proxy Core, Main Entrypoint | Completely remove the obsolete heap in-memory soft TTL component and unreachable revalidation branches, eliminating dual-track technical debt and converging 100% of TTL traffic onto the disk TTL pipeline |
+| **Feature 338** | **Unified Concurrent Download & Broadcast Pipeline Plan** | Downloader Module, Proxy Core | Decouple the two 85%-duplicate concurrent streaming pipelines (static caching and disk TTL) into a unified streaming write-and-broadcast engine driven by declarative policies, eliminating 200+ lines of duplicate concurrency boilerplate |
+| **Feature 339** | **Graceful Shutdown & Process Lifecycle Governance Plan** | Main Entrypoint, Downloader Module, Proxy Core | Introduce OS signal interception and coordinated graceful shutdown orchestration, ensuring in-flight request draining, safe cancellation of active downloads with zero-pollution temporary file cleanup, proactive termination of hijacked tunnels, and outbound connection pool teardown |
+
+### 6.2 Detailed Governance Notes
+
+#### 6.2.1 Feature 337: Legacy In-Memory Soft TTL Cleanup & Cache Convergence
+- **Evolution Context**: After the completion of `Feature 332` and `Feature 333` establishing disk-backed mtime zero-heap freshness revalidation, all requests with `TTL > 0` were intercepted upstream by the Proxy Core, rendering the in-memory soft TTL branches within the bypass pipeline completely dead and unreachable.
+- **Key Achievements**:
+  1. Completely removed the Memory TTL Module along with its heap byte slice cache maps;
+  2. Stripped dead code from the bypass pipeline, keeping bypass handling purely focused on streaming passthrough and body rewriting;
+  3. Streamlined initialization signatures and dependency injection across the Proxy Core, eliminating historical dual-track caching debt.
+
+#### 6.2.2 Feature 338: Unified Concurrent Download & Broadcast Pipeline
+- **Evolution Context**: The legacy concurrent download coalescing pipeline and the newly introduced disk TTL pipeline exhibited ~85% code overlap across Leader write-and-broadcast pumps, Follower catch-up consumption pumps, and non-200 streaming interception paths, creating dual-maintenance overhead and risks of divergent behavior.
+- **Key Achievements**:
+  1. Abstracted a unified streaming file-persisting and multicast broadcast engine, consolidating read/write synchronization, Readers reference counting, and atomic renaming into a single shared execution core;
+  2. Decoupled mechanism from policy, using declarative policies to drive request preparation, 304 touch revalidation, stale fallback, and cache status header decoration;
+  3. Removed over 200 lines of redundant concurrency boilerplate and aligned component log formats across all download flows.
+
+#### 6.2.3 Feature 339: Graceful Shutdown & Process Lifecycle Governance
+- **Evolution Context**: The HTTP server previously ran via blocking listen calls without OS signal interception. Process termination abruptly killed in-flight requests, bypassed background component teardowns (such as watchdog tickers), risked partial temporary file pollution or corruption, and leaked hijacked tunnels and outbound connection pools.
+- **Key Achievements**:
+  1. Intercepted OS `SIGINT` and `SIGTERM` signals in the Main Entrypoint, deriving a root cancellable context with a 15-second graceful draining deadline;
+  2. Coordinated HTTP server shutdown to reject new connections while allowing in-flight requests to complete smoothly;
+  3. Introduced idempotent shutdown in the Downloader Module, stopping watchdog loops and aborting active Leader downloads while guaranteeing 100% cleanup of in-progress temporary files to prevent cache corruption;
+  4. Tracked active hijacked HTTPS tunnels in the Proxy Core, closing underlying sockets upon shutdown and releasing outbound HTTP client idle connection pools for a complete lifecycle management loop.
