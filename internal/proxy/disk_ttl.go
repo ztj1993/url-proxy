@@ -23,8 +23,18 @@ func (p *diskTTLPolicy) prepareRequest(ctx context.Context, r *http.Request, tar
 		return nil, err
 	}
 	relayRequestHeaders(req, r)
+
+	// 1. 落盘防压缩守卫：显式剥离客户端 Accept-Encoding，启用 Transport 自动透明解压 (Feature 343)
+	req.Header.Del("Accept-Encoding")
+
+	// 2. 剥离客户端 ETag：防止客户端异构 If-None-Match 绑架协商导致 304 退化为 200 全量拉取 (Feature 343)
+	req.Header.Del("If-None-Match")
+
+	// 3. 隔离客户端修改时间：本地有缓存时以本地真实 mtime 发起增量续期；本地无缓存时强制剥离以获取 200 OK 建仓 (Feature 343)
 	if fileExists {
 		req.Header.Set("If-Modified-Since", stat.ModTime().UTC().Format(http.TimeFormat))
+	} else {
+		req.Header.Del("If-Modified-Since")
 	}
 	return req, nil
 }
