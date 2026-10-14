@@ -222,23 +222,7 @@ func (rw *BodyRewriter) RuleMatchesResponse(r config.RewriteRule, reqPath, uri, 
 		if !ok {
 			return IsTextualMimeType(contentType)
 		}
-		for _, m := range tDef.Mimes {
-			if strings.HasSuffix(m, "*") {
-				if strings.HasPrefix(ct, strings.TrimSuffix(m, "*")) {
-					return true
-				}
-			} else {
-				if strings.Contains(ct, m) {
-					return true
-				}
-			}
-		}
-		for _, s := range tDef.Suffixes {
-			if strings.HasSuffix(cleanPath, s) {
-				return true
-			}
-		}
-		return false
+		return rw.matchTypeDefinition(tDef, ct, cleanPath)
 	}
 
 	if strings.HasPrefix(spec, "mime:") {
@@ -258,23 +242,7 @@ func (rw *BodyRewriter) RuleMatchesResponse(r config.RewriteRule, reqPath, uri, 
 	}
 
 	if tDef, ok := rw.Types[spec]; ok {
-		for _, m := range tDef.Mimes {
-			if strings.HasSuffix(m, "*") {
-				if strings.HasPrefix(ct, strings.TrimSuffix(m, "*")) {
-					return true
-				}
-			} else {
-				if strings.Contains(ct, m) {
-					return true
-				}
-			}
-		}
-		for _, s := range tDef.Suffixes {
-			if strings.HasSuffix(cleanPath, s) {
-				return true
-			}
-		}
-		return false
+		return rw.matchTypeDefinition(tDef, ct, cleanPath)
 	}
 
 	if IsBinaryMimeType(ct) {
@@ -313,4 +281,24 @@ func (rw *BodyRewriter) Apply(clientHost string, reqPath, uri, contentType strin
 		}
 	}
 	return res
+}
+
+func (rw *BodyRewriter) matchTypeDefinition(tDef config.TypeDefinition, ct, cleanPath string) bool {
+	for _, m := range tDef.Mimes {
+		if strings.HasSuffix(m, "*") {
+			if strings.HasPrefix(ct, strings.TrimSuffix(m, "*")) {
+				return true
+			}
+		} else {
+			if strings.Contains(ct, m) {
+				return true
+			}
+		}
+	}
+	for _, s := range tDef.Suffixes {
+		if strings.HasSuffix(cleanPath, s) {
+			return true
+		}
+	}
+	return false
 }
