@@ -42,7 +42,7 @@ func TestBypassAndWhitelistPriority(t *testing.T) {
 	}
 
 	uri := "http://archive.ubuntu.com/dists/jammy/main/binary-amd64/Packages.deb"
-	if ShouldBypassCache(uri, rules) {
+	if MatchBypassRule(uri, rules) != nil {
 		t.Errorf("expected whitelist rule to take priority and not bypass cache")
 	}
 }

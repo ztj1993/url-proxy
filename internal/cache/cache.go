@@ -166,8 +166,3 @@ func MatchBypassRule(rawUri string, rules []config.NoCacheRule, clientPaths ...s
 
 	return matchedBypass
 }
-
-// ShouldBypassCache 判定是否应免除落盘缓存
-func ShouldBypassCache(rawUri string, rules []config.NoCacheRule, clientPaths ...string) bool {
-	return MatchBypassRule(rawUri, rules, clientPaths...) != nil
-}
