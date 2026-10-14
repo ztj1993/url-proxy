@@ -217,16 +217,7 @@ func Parse(r io.Reader) (*ProxyConfig, error) {
 					rule.Regexp = re
 				}
 				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
-			} else if len(cleanFields) == 3 && cleanFields[2] == "*" {
-				rule := NoCacheRule{
-					Scope:   cleanFields[1],
-					Action:  "bypass",
-					Type:    "*",
-					Pattern: "*",
-					TTL:     ttl,
-				}
-				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
-			} else if len(cleanFields) == 2 {
+			} else if len(cleanFields) == 2 || (len(cleanFields) == 3 && cleanFields[2] == "*") {
 				rule := NoCacheRule{
 					Scope:   cleanFields[1],
 					Action:  "bypass",
