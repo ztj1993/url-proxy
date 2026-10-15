@@ -47,7 +47,7 @@ func (p *staticDownloadPolicy) handleNetworkError(reqID uint64, uri string, err 
 
 func (p *staticDownloadPolicy) handleResponse(reqID uint64, uri string, name string, resp *http.Response, stat os.FileInfo, fileExists bool, job *downloader.DownloadJob) bool {
 	job.StatusCode = resp.StatusCode
-	copyHeader(job.Header, resp.Header)
+	RelayResponseHeaders(job.Header, resp.Header)
 
 	if resp.StatusCode == http.StatusNotModified {
 		_ = resp.Body.Close()

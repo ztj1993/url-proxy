@@ -26,12 +26,15 @@ func relayRequestHeaders(dst *http.Request, src *http.Request) {
 	}
 
 	// 1. 解析 Connection 标头中动态声明的逐跳字段
-	dynamicHops := make(map[string]bool)
+	var dynamicHops map[string]bool
 	if connVal := src.Header.Get("Connection"); connVal != "" {
 		parts := strings.Split(connVal, ",")
 		for _, p := range parts {
 			trimmed := strings.TrimSpace(p)
 			if trimmed != "" {
+				if dynamicHops == nil {
+					dynamicHops = make(map[string]bool)
+				}
 				dynamicHops[http.CanonicalHeaderKey(trimmed)] = true
 			}
 		}
@@ -66,12 +69,15 @@ func RelayResponseHeaders(dst http.Header, src http.Header) {
 	}
 
 	// 1. 解析 Connection 标头中动态声明的逐跳字段
-	dynamicHops := make(map[string]bool)
+	var dynamicHops map[string]bool
 	if connVal := src.Get("Connection"); connVal != "" {
 		parts := strings.Split(connVal, ",")
 		for _, p := range parts {
 			trimmed := strings.TrimSpace(p)
 			if trimmed != "" {
+				if dynamicHops == nil {
+					dynamicHops = make(map[string]bool)
+				}
 				dynamicHops[http.CanonicalHeaderKey(trimmed)] = true
 			}
 		}
@@ -89,6 +95,3 @@ func RelayResponseHeaders(dst http.Header, src http.Header) {
 	}
 }
 
-func relayResponseHeaders(dst http.Header, src http.Header) {
-	RelayResponseHeaders(dst, src)
-}

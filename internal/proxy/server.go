@@ -142,9 +142,6 @@ func (s *Server) TunnelTimeout() time.Duration {
 	return s.tunnelTimeout
 }
 
-func copyHeader(dst http.Header, src http.Header) {
-	relayResponseHeaders(dst, src)
-}
 
 func in(target string, array []string) bool {
 	for _, element := range array {

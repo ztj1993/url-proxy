@@ -54,7 +54,7 @@ func (s *Server) handleBypass(
 		_ = resp.Body.Close()
 	}()
 
-	copyHeader(w.Header(), resp.Header)
+	RelayResponseHeaders(w.Header(), resp.Header)
 
 	if s.rewriter != nil && s.rewriter.ShouldRewrite(r.URL.Path, uri, resp.Header.Get("Content-Type")) && resp.StatusCode == http.StatusOK {
 		clientHost := r.Host

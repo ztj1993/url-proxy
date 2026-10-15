@@ -106,7 +106,7 @@ func (s *Server) executeCoalescedPipeline(
 				log.Printf("[%d] upstream non-200 (%d): %s (skip disk caching)", reqID, resp.StatusCode, uri)
 				s.downMgr.Remove(uri)
 				job.StatusCode = resp.StatusCode
-				copyHeader(job.Header, resp.Header)
+				RelayResponseHeaders(job.Header, resp.Header)
 				job.Body = resp.Body
 				close(job.HeaderDone)
 				select {
@@ -118,7 +118,7 @@ func (s *Server) executeCoalescedPipeline(
 
 			// 200 OK: 策略修饰并启动流式落盘与广播泵
 			job.StatusCode = http.StatusOK
-			copyHeader(job.Header, resp.Header)
+			RelayResponseHeaders(job.Header, resp.Header)
 			policy.onOKResponse(job)
 
 			s.streamUpstreamToFileAndBroadcast(reqID, uri, resp, name, job)
@@ -134,7 +134,7 @@ func (s *Server) executeCoalescedPipeline(
 		return
 	}
 
-	copyHeader(w.Header(), job.Header)
+	RelayResponseHeaders(w.Header(), job.Header)
 
 	// 上游 304 且无文件返回短路 (静态下载场景)
 	if job.StatusCode == http.StatusNotModified {

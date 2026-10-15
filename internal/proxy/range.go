@@ -54,7 +54,7 @@ func (s *Server) handleHead(
 		_ = resp.Body.Close()
 	}()
 
-	copyHeader(w.Header(), resp.Header)
+	RelayResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 }
 
@@ -98,7 +98,7 @@ func (s *Server) handleRange(
 		_ = resp.Body.Close()
 	}()
 
-	copyHeader(w.Header(), resp.Header)
+	RelayResponseHeaders(w.Header(), resp.Header)
 	w.WriteHeader(resp.StatusCode)
 	_, _ = io.Copy(w, resp.Body)
 }
