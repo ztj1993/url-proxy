@@ -69,3 +69,20 @@ func TestNoCacheRule_Match(t *testing.T) {
 		t.Errorf("expected pattern match")
 	}
 }
+
+func TestWildcardRuleParsing(t *testing.T) {
+	confData := "bypass /api\nbypass /static *\ncache /dists/\ncache /pool/ *\n"
+	cfg, err := Parse(strings.NewReader(confData))
+	if err != nil {
+		t.Fatalf("parse failed: %v", err)
+	}
+	if len(cfg.NoCacheRules) != 4 {
+		t.Fatalf("expected 4 rules, got %d", len(cfg.NoCacheRules))
+	}
+	for i, expectedAction := range []string{"bypass", "bypass", "cache", "cache"} {
+		r := cfg.NoCacheRules[i]
+		if r.Action != expectedAction || r.Type != "*" || r.Pattern != "*" {
+			t.Errorf("rule %d mismatch: %+v", i, r)
+		}
+	}
+}

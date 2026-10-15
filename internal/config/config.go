@@ -246,7 +246,7 @@ func Parse(r io.Reader) (*ProxyConfig, error) {
 					rule.Regexp = re
 				}
 				cfg.NoCacheRules = append(cfg.NoCacheRules, rule)
-			} else if len(fields) == 3 && fields[2] == "*" {
+			} else if len(fields) == 2 || (len(fields) == 3 && fields[2] == "*") {
 				rule := NoCacheRule{
 					Scope:   fields[1],
 					Action:  "cache",
