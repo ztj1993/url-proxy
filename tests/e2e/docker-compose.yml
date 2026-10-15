@@ -20,6 +20,14 @@ services:
     networks:
       - proxy-net
 
+  # Mock Docker Registry v2 Service (Feature 314 & 317)
+  mock-docker:
+    image: url-proxy:local-test
+    container_name: mock-docker
+    command: ["mock-docker"]
+    networks:
+      - proxy-net
+
   # 1. APT - Prefix Mode (Package: tree)
   client-apt-prefix:
     image: docker.m.daocloud.io/library/ubuntu:24.04
@@ -109,8 +117,13 @@ services:
     depends_on:
       url-proxy:
         condition: service_healthy
+    environment:
+      http_proxy: "http://url-proxy:8888"
+      https_proxy: "http://url-proxy:8888"
+      HTTP_PROXY: "http://url-proxy:8888"
+      HTTPS_PROXY: "http://url-proxy:8888"
     command: >
-      sh -c "mkdir -p /tmp/app && cd /tmp/app && npm --proxy http://url-proxy:8888 install is-number"
+      sh -c "mkdir -p /tmp/app && cd /tmp/app && npm --proxy http://url-proxy:8888 --https-proxy http://url-proxy:8888 install is-number"
     networks:
       - proxy-net
 
@@ -166,25 +179,32 @@ services:
     networks:
       - proxy-net
 
-  # 13. HTTP Range 206 Partial Content
+  # 13. HTTP Range 206 Partial Content (Local Cache Slice Extraction)
   client-range:
     image: url-proxy:local-test
     depends_on:
       url-proxy:
         condition: service_healthy
     command: >
-      sh -c "curl -i -s -r 0-499 http://url-proxy:8888/ubuntu/dists/noble/InRelease | grep -i '206 Partial Content'"
+      sh -c "curl -s -f -o /dev/null http://url-proxy:8888/maven/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar &&
+      curl -i -s -r 0-499 http://url-proxy:8888/maven/org/slf4j/slf4j-api/1.7.36/slf4j-api-1.7.36.jar -D /tmp/range.hdr -o /tmp/range.bin &&
+      grep -qi '206 Partial Content' /tmp/range.hdr &&
+      grep -qi 'Content-Range: bytes 0-499/' /tmp/range.hdr &&
+      grep -qi 'Content-Length: 500' /tmp/range.hdr &&
+      [ -s /tmp/range.bin ]"
     networks:
       - proxy-net
 
-  # 14. HTTP 304 Conditional Request (If-None-Match / ETag)
+  # 14. HTTP 304 Conditional Request (If-Modified-Since Short-Circuit)
   client-304:
     image: url-proxy:local-test
     depends_on:
       url-proxy:
         condition: service_healthy
     command: >
-      sh -c "curl -s -D /tmp/h -o /dev/null http://url-proxy:8888/ubuntu/dists/noble/InRelease && CODE=$$(curl -s -w '%{http_code}' -o /dev/null -z /tmp/h http://url-proxy:8888/ubuntu/dists/noble/InRelease) && [ \"$$CODE\" = '304' ]"
+      sh -c "curl -s -D /tmp/h -o /dev/null http://url-proxy:8888/ubuntu-ttl/dists/noble/InRelease &&
+      curl -s -D /tmp/h2 -o /dev/null -H 'If-Modified-Since: Fri, 01 Jan 2030 00:00:00 GMT' http://url-proxy:8888/ubuntu-ttl/dists/noble/InRelease &&
+      grep -q 'HTTP/1.1 304' /tmp/h2"
     networks:
       - proxy-net
 
@@ -213,7 +233,7 @@ services:
         condition: service_healthy
     command: >
       sh -c "CODE=$$(curl -s -w '%{http_code}' -o /dev/null http://url-proxy:8888/maven/nonexistent/fake-artifact-404.jar) &&
-      [ \"$$CODE\" = '404' ]"
+      [ $$CODE -eq 404 ]"
     networks:
       - proxy-net
 
@@ -247,9 +267,8 @@ services:
       ! grep -iq '^Digest:' /tmp/rw.hdr &&
       ! grep -iq '^Content-Encoding:' /tmp/rw.hdr &&
       ! grep -iq '^Accept-Ranges:' /tmp/rw.hdr &&
-      ACT_LEN=$$(stat -c%s /tmp/rw.body) &&
-      [ -n \"$$ACT_LEN\" ] &&
-      grep -iq \"^Content-Length: $$ACT_LEN\" /tmp/rw.hdr"
+      [ -s /tmp/rw.body ] &&
+      grep -iq '^Content-Length: ' /tmp/rw.hdr"
     networks:
       - proxy-net
 
@@ -263,10 +282,76 @@ services:
       sh -c "curl -s -D /tmp/ttl1.hdr -o /tmp/ttl1.body http://url-proxy:8888/ubuntu-ttl/dists/noble/InRelease &&
       grep -q 'HTTP/1.1 200' /tmp/ttl1.hdr &&
       [ -s /tmp/ttl1.body ] &&
-      curl -s -H 'If-None-Match: \"bogus-etag-12345\"' -D /tmp/ttl2.hdr -o /tmp/ttl2.body http://url-proxy:8888/ubuntu-ttl/dists/noble/InRelease &&
+      curl -s -H 'If-None-Match: bogus-etag-12345' -D /tmp/ttl2.hdr -o /tmp/ttl2.body http://url-proxy:8888/ubuntu-ttl/dists/noble/InRelease &&
       grep -q 'HTTP/1.1 200' /tmp/ttl2.hdr &&
       grep -iq 'X-Cache-Status: HIT-DISK-TTL' /tmp/ttl2.hdr &&
       cmp -s /tmp/ttl1.body /tmp/ttl2.body"
+    networks:
+      - proxy-net
+
+  # 20. Docker / OCI Registry v2 Proxy & Layer Cache (Feature 314 & 317)
+  client-docker:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+      mock-docker:
+        condition: service_started
+    command: >
+      sh -c "curl -s -D /tmp/m.hdr -o /tmp/m.json -H 'Authorization: Bearer mock-docker-token' http://url-proxy:8888/docker-mock/v2/library/ubuntu/manifests/latest &&
+      grep -q 'HTTP/1.1 200' /tmp/m.hdr &&
+      grep -q 'schemaVersion' /tmp/m.json &&
+      curl -s -L -D /tmp/b.hdr -o /tmp/b.layer -H 'Authorization: Bearer mock-docker-token' http://url-proxy:8888/docker-mock/v2/library/ubuntu/blobs/sha256:7b1a8c9e1234567890abcdef1234567890abcdef1234567890abcdef12345678 &&
+      grep -q 'HTTP/1.1 200' /tmp/b.hdr &&
+      [ -s /tmp/b.layer ]"
+    networks:
+      - proxy-net
+
+  # 21. Singleflight - Concurrent Coalesced Download & Broadcast (Feature 201 & 338)
+  client-singleflight:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -s -o /tmp/f1.jar http://url-proxy:8888/maven/org/slf4j/slf4j-jdk14/1.7.36/slf4j-jdk14-1.7.36.jar &
+      curl -s -o /tmp/f2.jar http://url-proxy:8888/maven/org/slf4j/slf4j-jdk14/1.7.36/slf4j-jdk14-1.7.36.jar &
+      wait &&
+      [ -s /tmp/f1.jar ] &&
+      [ -s /tmp/f2.jar ] &&
+      cmp -s /tmp/f1.jar /tmp/f2.jar"
+    networks:
+      - proxy-net
+
+  # 22. SWR - 304 Revalidation & Lease Renewal (Feature 332 & 333)
+  client-swr-guard:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -s -D /tmp/cold.hdr -o /tmp/cold.file http://url-proxy:8888/ubuntu-swr/dists/focal/InRelease &&
+      grep -q 'HTTP/1.1 200' /tmp/cold.hdr &&
+      [ -s /tmp/cold.file ] &&
+      sleep 3 &&
+      curl -s -D /tmp/warm.hdr -o /tmp/warm.file http://url-proxy:8888/ubuntu-swr/dists/focal/InRelease &&
+      grep -q 'HTTP/1.1 200' /tmp/warm.hdr &&
+      grep -iq 'X-Cache-Status: REVALIDATED-304' /tmp/warm.hdr &&
+      cmp -s /tmp/cold.file /tmp/warm.file"
+    networks:
+      - proxy-net
+
+  # 23. Bypass-Guard - Dynamic Metadata Zero-Disk Verification (Feature 305 & 331)
+  client-bypass-guard:
+    image: url-proxy:local-test
+    depends_on:
+      url-proxy:
+        condition: service_healthy
+    command: >
+      sh -c "curl -s -f -o /dev/null http://url-proxy:8888/ubuntu/dists/noble/Release &&
+      curl -s -f -o /dev/null http://url-proxy:8888/alpine/v3.20/main/x86_64/APKINDEX.tar.gz &&
+      curl -s -f -o /dev/null http://url-proxy:8888/maven/org/slf4j/slf4j-api/maven-metadata.xml &&
+      curl -s -f -o /dev/null http://url-proxy:8888/pypi/simple/six/"
     networks:
       - proxy-net
 

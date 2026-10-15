@@ -39,8 +39,8 @@ fi
 docker compose -f "${COMPOSE_FILE}" down -v --remove-orphans >/dev/null 2>&1 || true
 
 # 3. 启动并构建 url-proxy 核心服务
-echo "[1/3] Building and starting url-proxy service..."
-docker compose -f "${COMPOSE_FILE}" up -d --force-recreate --build url-proxy
+echo "[1/3] Building and starting url-proxy & mock services..."
+docker compose -f "${COMPOSE_FILE}" up -d --force-recreate --build url-proxy mock-docker
 
 echo -n "[INFO] Waiting for url-proxy to be ready..."
 READY=0
@@ -57,7 +57,7 @@ echo ""
 
 if [ "$READY" -ne 1 ]; then
     echo "[ERROR] url-proxy service failed to become healthy within 30 seconds! Container logs:"
-    docker compose -f "${COMPOSE_FILE}" logs url-proxy
+    docker logs url-proxy
     exit 1
 fi
 echo "[OK] url-proxy is up and healthy!"
@@ -95,8 +95,98 @@ run_test() {
     elapsed_sec=$(awk "BEGIN {printf \"%.2fs\", ${elapsed_ms}/1000}")
 
     local cache_msg="None"
-    if [ "$cache_pattern" = "tunnel" ] || [ "$cache_pattern" = "custom" ]; then
+    if [ "$cache_pattern" = "custom" ]; then
         cache_msg="${expected_cache_desc}"
+    elif [ "$cache_pattern" = "tunnel" ]; then
+        # 断言代理日志中记录了 CONNECT 隧道建立
+        if docker logs url-proxy 2>&1 | grep -q 'connect tunnel:'; then
+            cache_msg="${expected_cache_desc}"
+        else
+            cache_msg="Tunnel Not In Logs"
+            status="FAIL"
+        fi
+    elif [ "$cache_pattern" = "range-cache" ]; then
+        # 断言命中本地缓存分片直出
+        if docker logs url-proxy 2>&1 | grep -q 'range hit local cache'; then
+            cache_msg="${expected_cache_desc}"
+        else
+            cache_msg="No Local Range Hit"
+            status="FAIL"
+        fi
+    elif [ "$cache_pattern" = "go-errors" ]; then
+        # 精确断言 errors 的 .zip 和 .mod 均已缓存，且 /@v/list 未落盘
+        local has_zip has_mod has_list
+        has_zip=$(docker exec url-proxy find /cache -path "*errors*.zip" 2>/dev/null | grep -q . && echo 1 || echo 0)
+        has_mod=$(docker exec url-proxy find /cache -path "*errors*.mod" 2>/dev/null | grep -q . && echo 1 || echo 0)
+        has_list=$(docker exec url-proxy find /cache -path "*@v/list*" 2>/dev/null | grep -q . && echo 1 || echo 0)
+        if [ "$has_zip" -eq 1 ] && [ "$has_mod" -eq 1 ] && [ "$has_list" -eq 0 ]; then
+            cache_msg="${expected_cache_desc}"
+        else
+            cache_msg="Go Cache Error (zip:${has_zip} mod:${has_mod} list:${has_list})"
+            status="FAIL"
+        fi
+    elif [ "$cache_pattern" = "go-uuid" ]; then
+        # 精确断言 uuid 的 .zip 和 .mod 均已缓存
+        local has_zip has_mod
+        has_zip=$(docker exec url-proxy find /cache -path "*uuid*.zip" 2>/dev/null | grep -q . && echo 1 || echo 0)
+        has_mod=$(docker exec url-proxy find /cache -path "*uuid*.mod" 2>/dev/null | grep -q . && echo 1 || echo 0)
+        if [ "$has_zip" -eq 1 ] && [ "$has_mod" -eq 1 ]; then
+            cache_msg="${expected_cache_desc}"
+        else
+            cache_msg="Go Cache Error (zip:${has_zip} mod:${has_mod})"
+            status="FAIL"
+        fi
+    elif [ "$cache_pattern" = "docker-blobs" ]; then
+        # 断言 blob 文件已缓存且 manifests 未落盘
+        local has_blob has_manifest
+        has_blob=$(docker exec url-proxy find /cache -path "*blobs*7b1a8c9e*" 2>/dev/null | grep -q . && echo 1 || echo 0)
+        has_manifest=$(docker exec url-proxy find /cache -path "*manifests*" 2>/dev/null | grep -q . && echo 1 || echo 0)
+        if [ "$has_blob" -eq 1 ] && [ "$has_manifest" -eq 0 ]; then
+            cache_msg="${expected_cache_desc}"
+        else
+            cache_msg="Docker Cache Error (blob:${has_blob} manifest:${has_manifest})"
+            status="FAIL"
+        fi
+    elif [ "$cache_pattern" = "singleflight" ]; then
+        # 断言并发合并日志中同时出现 leader 回源与 follower 追读广播
+        local logs
+        logs=$(docker logs url-proxy 2>&1)
+        if echo "$logs" | grep -q 'coalesced job leader.*slf4j-jdk14' && echo "$logs" | grep -q 'coalesced job follower.*slf4j-jdk14'; then
+            cache_msg="${expected_cache_desc}"
+        else
+            cache_msg="Singleflight Missing"
+            status="FAIL"
+        fi
+    elif [ "$cache_pattern" = "swr-renew" ]; then
+        # 断言 TTL 超时后向上游发起 304 条件续期并更新 mtime
+        if docker logs url-proxy 2>&1 | grep -q 'disk ttl 304 revalidated, lease renewed.*focal/InRelease'; then
+            cache_msg="${expected_cache_desc}"
+        else
+            cache_msg="SWR Renewal Not Logged"
+            status="FAIL"
+        fi
+    elif [ "$cache_pattern" = "anti-metadata" ]; then
+        # 负向断言：确保动态元数据（Packages/Release/APKINDEX/maven-metadata/pypi-simple）未在磁盘落盘
+        local leaked=""
+        if docker exec url-proxy find /cache -name "Release" 2>/dev/null | grep -q .; then
+            leaked="${leaked} APT-Release"
+        fi
+        if docker exec url-proxy find /cache -name "APKINDEX.tar.gz" 2>/dev/null | grep -q .; then
+            leaked="${leaked} APKINDEX"
+        fi
+        if docker exec url-proxy find /cache -name "maven-metadata.xml" 2>/dev/null | grep -q .; then
+            leaked="${leaked} maven-metadata"
+        fi
+        if docker exec url-proxy find /cache -path "*pypi*simple*" 2>/dev/null | grep -q .; then
+            leaked="${leaked} pypi-simple"
+        fi
+
+        if [ -n "$leaked" ]; then
+            cache_msg="Leaked:${leaked}"
+            status="FAIL"
+        else
+            cache_msg="${expected_cache_desc}"
+        fi
     elif [ "$cache_pattern" = "anti-404" ]; then
         if docker exec url-proxy find /cache -name "*fake-artifact-404*" 2>/dev/null | grep -q .; then
             cache_msg="Contaminated"
@@ -128,11 +218,12 @@ run_test() {
             status="FAIL"
         fi
     elif [ -n "$cache_pattern" ]; then
-        # 直接在 url-proxy 容器内部检查 /cache 目录中是否存在对应文件
+        # 通用缓存检查：未找到必须置为 FAIL，杜绝假阳性！
         if docker exec url-proxy find /cache -path "${cache_pattern}" 2>/dev/null | grep -q .; then
             cache_msg="${expected_cache_desc}"
         else
             cache_msg="Not Found"
+            status="FAIL"
         fi
     fi
 
@@ -146,7 +237,7 @@ run_test() {
     if [ "$status" = "PASS" ]; then
         echo "[PASS] ${eco} (${mode}) passed | Duration: ${elapsed_sec} | Cache / Status: ${cache_msg}"
     else
-        echo "[FAIL] ${eco} (${mode}) failed!"
+        echo "[FAIL] ${eco} (${mode}) failed | Duration: ${elapsed_sec} | Cache / Status: ${cache_msg}"
     fi
 }
 
@@ -170,8 +261,8 @@ run_test "npm" "Prefix Mode" "npm install is-sorted" "client-npm-prefix" "*is-so
 run_test "npm" "HTTP Proxy" "npm install is-number" "client-npm-proxy" "tunnel" "HTTPS Tunnel"
 
 # 5. Go Tests (Independent packages: pkg/errors for GOPROXY, google/uuid for Proxy)
-run_test "Go" "GOPROXY Mode" "go download pkg/errors" "client-go-goproxy" "*errors*" ".zip/.mod cached (errors)"
-run_test "Go" "HTTP Proxy" "go download google/uuid" "client-go-proxy" "*uuid*" ".zip/.mod cached (uuid)"
+run_test "Go" "GOPROXY Mode" "go download pkg/errors" "client-go-goproxy" "go-errors" ".zip/.mod cached (errors)"
+run_test "Go" "HTTP Proxy" "go download google/uuid" "client-go-proxy" "go-uuid" ".zip/.mod cached (uuid)"
 
 # 6. Maven Central Test (.jar file caching)
 run_test "Maven" "Central Proxy" "fetch slf4j-api.jar" "client-maven" "*slf4j-api*.jar" ".jar cached (slf4j)"
@@ -179,16 +270,16 @@ run_test "Maven" "Central Proxy" "fetch slf4j-api.jar" "client-maven" "*slf4j-ap
 # 7. Rust Cargo Test (config.json rewrite & .crate caching)
 run_test "Cargo" "Sparse & Crates" "config rewrite & serde" "client-cargo" "*serde*.crate" "Rewritten & .crate cached"
 
-# 8. Range 206 Partial Content Test
-run_test "Range" "HTTP 206 Status" "curl range 0-499" "client-range" "custom" "206 Partial Content"
+# 8. Range 206 Partial Content Test (Local Cache Slice Extraction)
+run_test "Range" "HTTP 206 Status" "curl range 0-499" "client-range" "range-cache" "206 Partial Content (Cache)"
 
-# 9. Conditional 304 Not Modified Test
-run_test "Conditional" "HTTP 304 Status" "curl conditional 304" "client-304" "custom" "304 Not Modified"
+# 9. Conditional 304 Not Modified Test (Local 304 Short-Circuit)
+run_test "Conditional" "HTTP 304 Status" "curl conditional 304" "client-304" "custom" "304 Not Modified (Local)"
 
 # ==============================================================================================
 # Extended Stability & Governance Test Suite (Plans 330 & 340)
 # ==============================================================================================
-# 10. Cache HIT & Data Consistency (Second Download Test - Feature 342)
+# 10. Cache HIT & Data Consistency (Second Download Test - Feature 338 & 342)
 run_test "Cache-HIT" "Second Download" "verify HIT & identical" "client-cache-hit" "custom" "HIT & Bit-Identical"
 
 # 11. Non-200 404 Anti-Pollution Test (Feature 331)
@@ -203,13 +294,28 @@ run_test "Rewrite" "Header Cleansing" "strip ETag/Digest & len" "client-rewrite-
 # 14. Disk TTL Fresh HIT & Client ETag Isolation Test (Features 332 & 343)
 run_test "Disk-TTL" "Fresh HIT & Guard" "TTL hit & ETag isolate" "client-ttl-guard" "disk-ttl" "HIT-DISK-TTL (Isolated)"
 
+# ==============================================================================================
+# Advanced Architectural & Concurrency Test Suite (Docker, Singleflight, SWR, Metadata Guard)
+# ==============================================================================================
+# 15. Docker / OCI Registry v2 Proxy & Layer Cache (Feature 314 & 317)
+run_test "Docker" "OCI Registry v2" "manifest bypass & blob" "client-docker" "docker-blobs" "Manifest Bypass & Layer Hit"
+
+# 16. Singleflight Concurrent Coalescing & Broadcast (Feature 201 & 338)
+run_test "Singleflight" "Request Merge" "concurrent fetch & wait" "client-singleflight" "singleflight" "Leader Coalesced & Broadcast"
+
+# 17. SWR 304 Revalidation & Lease Renewal (Feature 332 & 333)
+run_test "SWR-Renew" "304 TTL Renewal" "expired 304 & touch mtime" "client-swr-guard" "swr-renew" "REVALIDATED-304 & Renewed"
+
+# 18. Dynamic Metadata Zero-Disk Verification (Feature 305 & 331)
+run_test "Bypass-Guard" "Zero-Disk Meta" "verify bypass non-cached" "client-bypass-guard" "anti-metadata" "Zero-Disk (Metadata Clean)"
+
 # 4. 打印报告 (纯英文字符表格，无 ANSI 颜色)
 echo ""
 echo "[3/3] Generating final inspection report..."
 echo "=================================================================================================="
 echo "                                url-proxy E2E Inspection Report                                   "
 echo "=================================================================================================="
-printf "%-12s %-16s %-26s %-10s %-26s %s\n" "Ecosystem" "Mode" "Command" "Duration" "Cache / Status" "Result"
+printf "%-12s %-16s %-26s %-10s %-28s %s\n" "Ecosystem" "Mode" "Command" "Duration" "Cache / Status" "Result"
 echo "--------------------------------------------------------------------------------------------------"
 
 TOTAL=${#RESULTS_ECO[@]}
@@ -232,7 +338,7 @@ for ((i=0; i<TOTAL; i++)); do
         status_disp="[FAIL]"
     fi
 
-    printf "%-12s %-16s %-26s %-10s %-26s %s\n" "$eco" "$mode" "$cmd" "$t" "$c" "$status_disp"
+    printf "%-12s %-16s %-26s %-10s %-28s %s\n" "$eco" "$mode" "$cmd" "$t" "$c" "$status_disp"
 done
 
 echo "--------------------------------------------------------------------------------------------------"
