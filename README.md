@@ -53,19 +53,24 @@ go run .\url-proxy.go -addr :8888 -conf proxy.conf -cache ./cache
 
 ### Docker
 
-#### Build Image
+#### Run with Pre-built Image (Recommended GHCR)
+Pre-built multi-architecture images (supporting `linux/amd64` and `linux/arm64`) are published to GitHub Container Registry:
 ```bash
-docker build -t ztj1993/url-proxy:latest .
-```
+# Quick start with built-in default configuration
+docker run -d --name=uproxy --restart=always -p 8888:8888 ghcr.io/ztj1993/url-proxy:latest
 
-#### Run Container
-```bash
+# Run with custom local configuration and cache directory mounted
 docker run -d --name=uproxy \
   --restart=always \
   -p 8888:8888 \
   -v "$PWD/proxy.conf":/srv/proxy.conf:ro \
   -v "$PWD/cache":/srv/cache \
-  ztj1993/url-proxy:latest -addr :8888 -conf /srv/proxy.conf -cache /srv/cache
+  ghcr.io/ztj1993/url-proxy:latest -addr :8888 -conf /srv/proxy.conf -cache /srv/cache
+```
+
+#### Local Build
+```bash
+docker build -t ghcr.io/ztj1993/url-proxy:latest .
 ```
 
 ## Unified Configuration (`proxy.conf`)

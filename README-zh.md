@@ -53,19 +53,24 @@ go run .\url-proxy.go -addr :8888 -conf proxy.conf -cache ./cache
 
 ### Docker 容器运行
 
-#### 构建镜像
+#### 直接拉取运行 (推荐 GHCR)
+已提供预构建的多架构镜像（支持 `linux/amd64` 与 `linux/arm64`）：
 ```bash
-docker build -t ztj1993/url-proxy:latest .
-```
+# 快速启动（使用默认内置配置）
+docker run -d --name=uproxy --restart=always -p 8888:8888 ghcr.io/ztj1993/url-proxy:latest
 
-#### 启动容器
-```bash
+# 挂载本地配置文件与缓存目录运行
 docker run -d --name=uproxy \
   --restart=always \
   -p 8888:8888 \
   -v "$PWD/proxy.conf":/srv/proxy.conf:ro \
   -v "$PWD/cache":/srv/cache \
-  ztj1993/url-proxy:latest -addr :8888 -conf /srv/proxy.conf -cache /srv/cache
+  ghcr.io/ztj1993/url-proxy:latest -addr :8888 -conf /srv/proxy.conf -cache /srv/cache
+```
+
+#### 本地构建镜像
+```bash
+docker build -t ghcr.io/ztj1993/url-proxy:latest .
 ```
 
 ## 统一配置系统 (`proxy.conf`)
